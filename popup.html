@@ -1,56 +1,165 @@
+<!-- popup.html -->
+
 <!DOCTYPE html>
-<html>
-<head>
-  <title>Threads Repost Extension</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <div class="header">
-      <img src="icon.png" alt="Threads Repost Extension" class="logo">
-      <h1>Threads Repost</h1>
-  </div>
-
-  <div class="input-group">
-    <label for="threadCount">Number of Threads to Extract:</label>
-    <input type="number" id="threadCount" min="1" max="10" value="3">
-  </div>
-  
-  <div class="input-group">
-    <label for="minRepostDelay">Min Delay Between Reposts (seconds):</label>
-    <input type="number" id="minRepostDelay" min="1" max="60" value="3">
-  </div>
-  
-  <div class="input-group">
-    <label for="maxRepostDelay">Max Delay Between Reposts (seconds):</label>
-    <input type="number" id="maxRepostDelay" min="1" max="60" value="10">
-  </div>
-  
-  <button id="extractThreads">Extract Threads</button>
-  
-  <div id="threadsList"></div>
-  
-  <div class="button-group">
-    <button id="repostThreads" disabled>Repost Threads</button>
-    <button id="stopReposting" style="display: none; background-color: #5a3333; border-color: #7a4444;">Stop Reposting</button>
-    <button id="clearThreads">Clear All</button>
-  </div>
-
-  <!-- Success Modal -->
-  <div id="successModal" class="modal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2>Repost Summary</h2>
-        <span id="successModalClose" class="close-btn">&times;</span>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Threads Pro Bot</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <!-- License Section -->
+    <div id="licenseSection" class="license-section">
+      <div class="header">
+        <img src="assets/icon.png" alt="Threads Pro" class="logo" />
+        <h1>Threads Pro Bot</h1>
       </div>
-      <div id="successDetails" class="modal-body">
-        <p>Threads reposted successfully!</p>
-      </div>
-      <div class="modal-footer">
-        <button id="successModalClose">Close</button>
+      <div class="license-form">
+        <h3>Activate Your License</h3>
+        <input type="email" id="licenseEmail" placeholder="Email address" />
+        <input type="text" id="licenseKey" placeholder="License key" />
+        <button id="activateLicense">Activate</button>
+        <div id="licenseError" class="error-message"></div>
       </div>
     </div>
-  </div>
 
-  <script src="popup.js"></script>
-</body>
+    <!-- Main Interface (hidden until licensed) -->
+    <div id="mainInterface" class="main-interface" style="display: none">
+      <div class="header">
+        <img src="assets/icon.png" alt="Threads Pro" class="logo" />
+        <h1>Threads Pro Bot</h1>
+        <span class="license-status" id="licenseStatus">Licensed</span>
+      </div>
+
+      <!-- Mode Toggle -->
+      <div class="mode-toggle">
+        <button class="mode-btn active" id="extractMode">
+          Extract Threads
+        </button>
+        <button class="mode-btn" id="writeMode">Write Threads</button>
+      </div>
+
+      <!-- Extract Mode Section -->
+      <div id="extractSection" class="mode-section">
+        <div class="input-group">
+          <label>Number of Threads to Extract:</label>
+          <input type="number" id="threadCount" min="1" max="100" value="5" />
+        </div>
+
+        <div class="input-group">
+          <label>
+            <input type="checkbox" id="excludeLinks" checked />
+            Exclude threads with links
+          </label>
+        </div>
+
+        <div class="input-group">
+          <label>
+            <input type="checkbox" id="randomOrder" checked />
+            Extract in random order
+          </label>
+        </div>
+
+        <button id="extractThreads" class="primary-btn">
+          <span class="btn-text">Extract Threads</span>
+          <div class="spinner" style="display: none"></div>
+        </button>
+      </div>
+
+      <!-- Write Mode Section -->
+      <div id="writeSection" class="mode-section" style="display: none">
+        <div class="thread-composer">
+          <textarea
+            id="threadComposer"
+            placeholder="Write your thread here...&#10;&#10;Press Enter twice for new paragraph"
+          ></textarea>
+          <div class="composer-footer">
+            <span id="charCount">0 characters</span>
+            <button id="addToQueue">Add to Queue</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Delay Settings -->
+      <div class="delay-settings">
+        <h3>Posting Settings</h3>
+        <div class="delay-inputs">
+          <div class="input-group">
+            <label>Min Delay (seconds):</label>
+            <input type="number" id="minDelay" min="5" max="300" value="30" />
+          </div>
+          <div class="input-group">
+            <label>Max Delay (seconds):</label>
+            <input type="number" id="maxDelay" min="5" max="300" value="60" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Thread Queue -->
+      <div class="thread-queue">
+        <h3>Thread Queue (<span id="queueCount">0</span>)</h3>
+        <div id="threadsList" class="threads-list"></div>
+      </div>
+
+      <!-- Progress Section -->
+      <div id="progressSection" class="progress-section" style="display: none">
+        <h3>Posting Progress</h3>
+        <div class="progress-stats">
+          <div class="stat">
+            <span class="stat-label">Posted:</span>
+            <span class="stat-value" id="postedCount">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Remaining:</span>
+            <span class="stat-value" id="remainingCount">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Next post in:</span>
+            <span class="stat-value" id="nextPostTime">--:--</span>
+          </div>
+        </div>
+        <div class="progress-bar-container">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <div class="current-status" id="currentStatus">Idle</div>
+      </div>
+
+      <!-- Control Buttons -->
+      <div class="control-buttons">
+        <button id="startPosting" class="primary-btn" disabled>
+          <span class="btn-text">Start Posting</span>
+        </button>
+        <button id="stopPosting" class="danger-btn" style="display: none">
+          <span class="btn-text">Stop Posting</span>
+        </button>
+        <button id="clearQueue" class="secondary-btn">Clear Queue</button>
+      </div>
+
+      <!-- Status Messages -->
+      <div id="statusMessage" class="status-message"></div>
+    </div>
+
+    <!-- Success Modal -->
+    <div id="successModal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Posting Complete</h2>
+          <span class="close-btn">&times;</span>
+        </div>
+        <div class="modal-body">
+          <p id="successDetails"></p>
+        </div>
+        <div class="modal-footer">
+          <button class="modal-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="utils.js"></script>
+    <script src="license.js"></script>
+    <script src="popup.js"></script>
+    <script src="lang.js"></script>
+  </body>
 </html>

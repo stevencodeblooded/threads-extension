@@ -1,30 +1,55 @@
 {
   "manifest_version": 3,
-  "name": "Threads Repost Extension",
-  "version": "1.1",
-  "description": "Extract and repost threads from Threads.net",
-  "permissions": ["activeTab", "storage"],
-  "action": {
-    "default_popup": "popup.html",
-    "default_icon": {
-      "16": "icon.png",
-      "48": "icon.png",
-      "128": "icon.png"
-    }
-  },
-  "icons": {
-    "16": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
-  },
+  "name": "Threads Pro Bot",
+  "version": "2.0.0",
+  "description": "Professional Threads automation tool with advanced features",
+  "permissions": ["activeTab", "storage", "alarms", "scripting", "tabs"],
+  "host_permissions": [
+    "*://www.threads.com/*",
+    "*://*.threads.com/*",
+    "*://threads.net/*",
+    "*://*.threads.net/*",
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["*://threads.com/*", "*://*.threads.com/*"],
+      "matches": [
+        "*://www.threads.com/*",
+        "*://*.threads.com/*",
+        "*://threads.net/*",
+        "*://*.threads.net/*"
+      ],
       "js": ["content.js"],
-      "run_at": "document_end"
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "assets/icon.png",
+      "48": "assets/icon.png",
+      "128": "assets/icon.png"
+    }
+  },
+  "icons": {
+    "16": "assets/icon.png",
+    "48": "assets/icon.png",
+    "128": "assets/icon.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["utils.js"],
+      "matches": [
+        "*://www.threads.com/*",
+        "*://*.threads.com/*",
+        "*://threads.net/*",
+        "*://*.threads.net/*"
+      ]
     }
   ]
 }

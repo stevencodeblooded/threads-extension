@@ -1,417 +1,806 @@
-document.addEventListener("DOMContentLoaded", () => {
-  const extractThreadsBtn = document.getElementById("extractThreads");
-  const repostThreadsBtn = document.getElementById("repostThreads");
-  const clearThreadsBtn = document.getElementById("clearThreads");
-  const threadCountInput = document.getElementById("threadCount");
-  const minRepostDelayInput = document.getElementById("minRepostDelay");
-  const maxRepostDelayInput = document.getElementById("maxRepostDelay");
-  const threadsList = document.getElementById("threadsList");
-  const successModal = document.getElementById("successModal");
-  const stopRepostingBtn = document.getElementById("stopReposting");
+// Popup script for Threads Pro Bot => popup.js
 
-  // Track reposting state
-  let isReposting = false;
-  let shouldStopReposting = false;
-
-  // ALL close buttons for the success modal
-  const successModalCloseButtons = [
-    document.getElementById("successModalClose"),
-    document.querySelector("#successModal .modal-footer button"),
-  ];
-
-  // Add click event listeners to ALL close buttons
-  successModalCloseButtons.forEach((closeButton) => {
-    if (closeButton) {
-      closeButton.addEventListener("click", () => {
-        successModal.classList.remove("show");
-      });
-    }
-  });
-
-  // Prevent default popup behavior
-  window.addEventListener("blur", (e) => {
-    window.focus();
-  });
-
-  // Disable context menu
-  document.addEventListener("contextmenu", (e) => e.preventDefault());
-
-  // Function to validate delay inputs
-  function validateDelayInputs() {
-    const minDelay = parseInt(minRepostDelayInput.value);
-    const maxDelay = parseInt(maxRepostDelayInput.value);
-
-    if (minDelay > maxDelay) {
-      alert("Minimum delay cannot be greater than maximum delay.");
-      minRepostDelayInput.value = Math.min(minDelay, maxDelay);
-      maxRepostDelayInput.value = Math.max(minDelay, maxDelay);
-    }
+class PopupManager {
+  constructor() {
+    this.currentMode = "extract"; // 'extract' or 'write'
+    this.threadQueue = [];
+    this.isPosting = false;
+    this.currentTab = null;
+    this.progressInterval = null;
+    this.countdownInterval = null;
   }
 
-  // Function to toggle UI state during reposting
-  function setRepostingState(reposting) {
-    isReposting = reposting;
-    if (reposting) {
-      // Entering reposting state
-      repostThreadsBtn.style.display = "none";
-      stopRepostingBtn.style.display = "flex";
-      extractThreadsBtn.disabled = true;
-      clearThreadsBtn.disabled = true;
-      threadCountInput.disabled = true;
-      minRepostDelayInput.disabled = true;
-      maxRepostDelayInput.disabled = true;
+  async init() {
+    Logger.log("Initializing popup");
 
-      // Save the reposting state to storage
-      chrome.storage.local.set({
-        isReposting: true,
-        minRepostDelay: parseInt(minRepostDelayInput.value),
-        maxRepostDelay: parseInt(maxRepostDelayInput.value),
-      });
+    await debugLicense();
 
-      // Disable checkboxes in thread list
-      const checkboxes = threadsList.querySelectorAll('input[type="checkbox"]');
-      checkboxes.forEach((checkbox) => {
-        checkbox.disabled = true;
-      });
-    } else {
-      // Exiting reposting state
-      repostThreadsBtn.style.display = "flex";
-      stopRepostingBtn.style.display = "none";
-      extractThreadsBtn.disabled = false;
-      clearThreadsBtn.disabled = false;
-      threadCountInput.disabled = false;
-      minRepostDelayInput.disabled = false;
-      maxRepostDelayInput.disabled = false;
-      shouldStopReposting = false;
+    // Get current tab
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    this.currentTab = tabs[0];
 
-      // Save the reposting state to storage
-      chrome.storage.local.set({
-        isReposting: false,
-        minRepostDelay: parseInt(minRepostDelayInput.value),
-        maxRepostDelay: parseInt(maxRepostDelayInput.value),
-      });
-
-      // Enable checkboxes in thread list
-      const checkboxes = threadsList.querySelectorAll('input[type="checkbox"]');
-      checkboxes.forEach((checkbox) => {
-        checkbox.disabled = false;
-      });
-    }
-  }
-
-  // Clear all threads and reset to default state
-  clearThreadsBtn.addEventListener("click", () => {
-    // Don't allow clearing while reposting
-    if (isReposting) return;
-
-    // Clear threads list
-    threadsList.innerHTML = "";
-
-    // Disable repost button
-    repostThreadsBtn.disabled = true;
-
-    // Reset input values to defaults
-    threadCountInput.value = 3;
-    minRepostDelayInput.value = 3;
-    maxRepostDelayInput.value = 10;
-
-    // Clear stored data
-    chrome.storage.local.remove(
-      [
-        "extractedThreads",
-        "threadCount",
-        "minRepostDelay",
-        "maxRepostDelay",
-        "isReposting",
-      ],
-      () => {
-        console.log("Extension state cleared");
-      }
-    );
-  });
-
-  // Stop reposting handler
-  stopRepostingBtn.addEventListener("click", () => {
-    if (isReposting) {
-      shouldStopReposting = true;
-      stopRepostingBtn.textContent = "Stopping...";
-      stopRepostingBtn.disabled = true;
-
-      // Save the stopping state to storage
-      chrome.storage.local.set({
-        isStopping: true,
-        minRepostDelay: parseInt(minRepostDelayInput.value),
-        maxRepostDelay: parseInt(maxRepostDelayInput.value),
-      });
-
-      // Notify the content script to stop reposting
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        chrome.tabs.sendMessage(tabs[0].id, { action: "stopReposting" });
-      });
-    }
-  });
-
-  // Populate threads list and save to storage
-  function populateThreadsList(threads) {
-    // Clear previous threads
-    threadsList.innerHTML = "";
-
-    // Populate threads list with checkboxes
-    threads.forEach((thread, index) => {
-      const threadItem = document.createElement("div");
-      threadItem.className = "thread-item";
-
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.id = `thread-${index}`;
-      checkbox.name = "selectedThreads";
-      checkbox.value = thread;
-      checkbox.checked = true; // Auto-check all threads
-
-      const label = document.createElement("label");
-      label.htmlFor = `thread-${index}`;
-      label.textContent =
-        thread.length > 100 ? thread.substring(0, 100) + "..." : thread;
-
-      threadItem.appendChild(checkbox);
-      threadItem.appendChild(label);
-      threadsList.appendChild(threadItem);
-    });
-
-    // Save extracted threads to storage
-    chrome.storage.local.set({ extractedThreads: threads });
-  }
-
-  // Save input values to storage when changed
-  threadCountInput.addEventListener("change", () => {
-    chrome.storage.local.set({ threadCount: threadCountInput.value });
-  });
-
-  // Add validation to delay inputs
-  minRepostDelayInput.addEventListener("change", () => {
-    validateDelayInputs();
-    chrome.storage.local.set({ minRepostDelay: minRepostDelayInput.value });
-  });
-
-  maxRepostDelayInput.addEventListener("change", () => {
-    validateDelayInputs();
-    chrome.storage.local.set({ maxRepostDelay: maxRepostDelayInput.value });
-  });
-
-  // Extract threads when button is clicked
-  extractThreadsBtn.addEventListener("click", () => {
-    // Don't allow extraction while reposting
-    if (isReposting) return;
-
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      // Ensure we have a valid tab
-      if (!tabs || !tabs.length) {
-        console.error("No active tab found");
-        return;
-      }
-
-      try {
-        chrome.tabs.sendMessage(
-          tabs[0].id,
-          {
-            action: "extractThreads",
-            count: parseInt(threadCountInput.value),
-          },
-          (response) => {
-            // Check for chrome runtime errors
-            if (chrome.runtime.lastError) {
-              console.error("Runtime error:", chrome.runtime.lastError);
-              return;
-            }
-
-            if (response && response.threads) {
-              // Populate threads and save to storage
-              populateThreadsList(response.threads);
-
-              // Enable repost button
-              repostThreadsBtn.disabled = false;
-            }
-          }
-        );
-      } catch (error) {
-        console.error("Error sending message:", error);
-      }
-    });
-  });
-
-  // Check if reposting is in progress with the content script
-  function checkRepostingStatus() {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (!tabs || !tabs.length) return;
-
-      // Ask content script about reposting status
-      try {
-        chrome.tabs.sendMessage(
-          tabs[0].id,
-          { action: "getRepostingStatus" },
-          (response) => {
-            // If we get a response and reposting is active
-            if (response && response.isReposting) {
-              setRepostingState(true);
-
-              // If stopping was requested
-              if (response.isStopping) {
-                stopRepostingBtn.textContent = "Stopping...";
-                stopRepostingBtn.disabled = true;
-              }
-            }
-          }
-        );
-      } catch (error) {
-        console.error("Error checking reposting status:", error);
-      }
-    });
-  }
-
-  // Repost selected threads
-  repostThreadsBtn.addEventListener("click", () => {
-    const selectedThreads = Array.from(
-      document.querySelectorAll('input[name="selectedThreads"]:checked')
-    ).map((checkbox) => checkbox.value);
-
-    if (selectedThreads.length === 0) {
-      return; // No threads selected
-    }
-
-    const minDelay = parseInt(minRepostDelayInput.value);
-    const maxDelay = parseInt(maxRepostDelayInput.value);
-
-    // Validate delay range
-    if (minDelay > maxDelay) {
-      alert("Minimum delay cannot be greater than maximum delay.");
+    if (
+      !this.currentTab.url.includes("threads.com") &&
+      !this.currentTab.url.includes("threads.net")
+    ) {
+      this.showError("Please navigate to Threads.com to use this extension");
       return;
     }
 
-    // Set UI to reposting state
-    setRepostingState(true);
+    // Initialize license
+    const isLicensed = await licenseManager.init();
+    if (isLicensed) {
+      this.showMainInterface();
+    } else {
+      this.showLicenseSection();
+    }
 
-    console.log(
-      `%c🚀 Starting repost process with delays: ${minDelay}s - ${maxDelay}s`,
-      "color: purple; font-weight: bold;"
-    );
+    // Setup event listeners
+    this.setupEventListeners();
 
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      chrome.tabs.sendMessage(
-        tabs[0].id,
-        {
-          action: "repostThreads",
-          threads: selectedThreads,
-          minDelay: minDelay,
-          maxDelay: maxDelay,
-        },
-        (response) => {
-          // Reset UI state
-          setRepostingState(false);
+    // Restore state
+    await this.restoreState();
 
-          // Clear the stopping state
-          chrome.storage.local.remove(["isStopping"]);
+    // Check if posting is in progress
+    await this.checkPostingStatus();
+  }
 
-          if (response) {
-            console.log("Repost process completed", response);
+  setupEventListeners() {
+    // License activation
+    document
+      .getElementById("activateLicense")
+      .addEventListener("click", () => this.activateLicense());
 
-            // Show success modal
-            const successDetails = document.getElementById("successDetails");
-            const stoppedText = response.stopped
-              ? " (Process was stopped)"
-              : "";
+    // Mode toggle
+    document
+      .getElementById("extractMode")
+      .addEventListener("click", () => this.switchMode("extract"));
+    document
+      .getElementById("writeMode")
+      .addEventListener("click", () => this.switchMode("write"));
 
-            successDetails.innerHTML = `
-              <p>Successfully reposted ${response.successfulPosts} out of ${response.totalPosts} threads!${stoppedText}</p>
-            `;
-            successModal.classList.add("show");
-          }
-        }
+    // Extract threads
+    document
+      .getElementById("extractThreads")
+      .addEventListener("click", () => this.extractThreads());
+
+    // Write mode
+    document
+      .getElementById("threadComposer")
+      .addEventListener("input", (e) => this.updateCharCount(e.target));
+    document
+      .getElementById("addToQueue")
+      .addEventListener("click", () => this.addWrittenThread());
+
+    // Delay validation
+    document
+      .getElementById("minDelay")
+      .addEventListener("change", () => this.validateDelays());
+    document
+      .getElementById("maxDelay")
+      .addEventListener("change", () => this.validateDelays());
+
+    // Control buttons
+    document
+      .getElementById("startPosting")
+      .addEventListener("click", () => this.startPosting());
+    document
+      .getElementById("stopPosting")
+      .addEventListener("click", () => this.stopPosting());
+    document
+      .getElementById("clearQueue")
+      .addEventListener("click", () => this.clearQueue());
+
+    // Modal close
+    document.querySelectorAll(".close-btn, .modal-close").forEach((btn) => {
+      btn.addEventListener("click", () => this.closeModal());
+    });
+
+    // Save settings on change
+    [
+      "threadCount",
+      "minDelay",
+      "maxDelay",
+      "excludeLinks",
+      "randomOrder",
+    ].forEach((id) => {
+      const element = document.getElementById(id);
+      if (element) {
+        element.addEventListener("change", () => this.saveSettings());
+      }
+    });
+  }
+
+  async activateLicense() {
+    console.log("Activate button clicked");
+
+    const email = document.getElementById("licenseEmail").value.trim();
+    const key = document.getElementById("licenseKey").value.trim();
+
+    console.log("Email:", email);
+    console.log("Key:", key);
+
+    if (!email || !key) {
+      this.showLicenseError("Please enter both email and license key");
+      return;
+    }
+
+    // Show loading state
+    const button = document.getElementById("activateLicense");
+    button.disabled = true;
+    button.textContent = "Activating...";
+
+    try {
+      const result = await licenseManager.activateLicense(email, key);
+      console.log("Activation result:", result);
+
+      if (result.success) {
+        this.showMainInterface();
+        this.showSuccess("License activated successfully!");
+      } else {
+        this.showLicenseError(result.error || "Activation failed");
+        button.disabled = false;
+        button.textContent = "Activate";
+      }
+    } catch (error) {
+      console.error("Activation error:", error);
+      this.showLicenseError(
+        "Failed to connect to server. Make sure the backend is running."
       );
-    });
+      button.disabled = false;
+      button.textContent = "Activate";
+    }
+  }
 
-    // Set up a listener for the stop request
-    chrome.runtime.onMessage.addListener(function stopListener(message) {
-      if (message.action === "repostStatus" && message.currentThread) {
-        // Update UI with current progress
-        console.log(
-          `Currently posting thread ${message.currentThread} of ${message.totalThreads}`
+  showLicenseSection() {
+    document.getElementById("licenseSection").style.display = "block";
+    document.getElementById("mainInterface").style.display = "none";
+  }
+
+  showMainInterface() {
+    document.getElementById("licenseSection").style.display = "none";
+    document.getElementById("mainInterface").style.display = "block";
+
+    // Update license status
+    const status = licenseManager.getStatus();
+    console.log("License status in popup:", status); // Debug
+
+    if (status.active || status.email) {
+      // Show info even if expired
+      let licenseText = "Licensed";
+      let licenseClass = "license-status"; // default class
+
+      if (status.isExpired) {
+        licenseText = "Licensed (Expired)";
+        licenseClass = "license-status expired";
+      } else if (status.daysLeft > 0) {
+        licenseText = `Licensed (${status.daysLeft} days left)`;
+      } else if (status.daysLeft === 0) {
+        licenseText = "Licensed (Expires today)";
+        licenseClass = "license-status warning";
+      }
+
+      const statusElement = document.getElementById("licenseStatus");
+      statusElement.textContent = licenseText;
+      statusElement.className = licenseClass;
+    }
+  }
+
+  switchMode(mode) {
+    this.currentMode = mode;
+
+    // Update UI
+    document
+      .querySelectorAll(".mode-btn")
+      .forEach((btn) => btn.classList.remove("active"));
+    document.getElementById(`${mode}Mode`).classList.add("active");
+
+    document.getElementById("extractSection").style.display =
+      mode === "extract" ? "block" : "none";
+    document.getElementById("writeSection").style.display =
+      mode === "write" ? "block" : "none";
+  }
+
+  async extractThreads() {
+    const button = document.getElementById("extractThreads");
+    const spinner = button.querySelector(".spinner");
+    const btnText = button.querySelector(".btn-text");
+
+    // Show loading state
+    button.disabled = true;
+    spinner.style.display = "block";
+    btnText.textContent = "Extracting...";
+
+    try {
+      // Check if we're on the correct site
+      if (
+        !this.currentTab.url.includes("threads.com") &&
+        !this.currentTab.url.includes("threads.net")
+      ) {
+        throw new Error("Please navigate to Threads.com to use this extension");
+      }
+
+      const count = parseInt(document.getElementById("threadCount").value);
+      const excludeLinks = document.getElementById("excludeLinks").checked;
+      const randomOrder = document.getElementById("randomOrder").checked;
+
+      Logger.log(
+        `Extracting ${count} threads from ${this.currentTab.url}`,
+        "info"
+      );
+
+      // Send message to content script
+      let response;
+      try {
+        response = await Messages.sendToTab(
+          this.currentTab.id,
+          "extractThreads",
+          {
+            count,
+            excludeLinks,
+            randomOrder,
+          }
         );
-
-        // Add visual progress indicator (add this new functionality)
-        if (message.posted !== undefined && message.pending !== undefined) {
-          console.log(
-            `Progress: ${message.posted} posted, ${message.pending} pending`
-          );
-
-          // Update button text to show progress
-          if (stopRepostingBtn.style.display === "flex") {
-            stopRepostingBtn.textContent = `Posting... (${message.posted}/${message.totalThreads})`;
-          }
-        }
-
-        // If we should stop, send the stop signal
-        if (shouldStopReposting) {
-          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            chrome.tabs.sendMessage(tabs[0].id, { action: "stopReposting" });
-          });
-        }
+      } catch (sendError) {
+        Logger.error("Error sending message to content script", sendError);
+        throw new Error(
+          "Could not connect to the page. Please refresh and try again."
+        );
       }
 
-      // If reposting is complete, remove this listener
-      if (message.action === "repostComplete") {
-        chrome.runtime.onMessage.removeListener(stopListener);
-        // Reset stop button text
-        stopRepostingBtn.textContent = "Stop Reposting";
+      // Log the full response for debugging
+      Logger.log("Extract threads response:", response);
+
+      // Check if response exists
+      if (!response) {
+        throw new Error(
+          "No response from content script. Please refresh the page and try again."
+        );
+      }
+
+      // Handle the response based on content script format
+      if (response.success === true) {
+        // Check if threads exist in response
+        if (!response.threads) {
+          throw new Error("No threads data in response");
+        }
+
+        // Ensure threads is an array
+        const threads = Array.isArray(response.threads) ? response.threads : [];
+
+        if (threads.length > 0) {
+          // Store both display and full thread data
+          await Storage.set("extractedThreadObjects", threads);
+
+          // Add each thread to queue
+          threads.forEach((thread) => {
+            this.addThreadToQueue(thread);
+          });
+
+          this.showSuccess(`Extracted ${threads.length} threads successfully!`);
+
+          // Log activity
+          licenseManager.logActivity("threads_extracted", {
+            count: threads.length,
+          });
+        } else {
+          this.showError(
+            "No threads found. Try scrolling down to load more threads or adjusting your filters."
+          );
+        }
+      } else {
+        // Handle extraction failure
+        const errorMessage = response.error || "Failed to extract threads";
+        throw new Error(errorMessage);
+      }
+    } catch (error) {
+      Logger.error("Failed to extract threads", error);
+
+      // Provide specific error messages based on the error type
+      let errorMessage = "Failed to extract threads. ";
+
+      if (error.message.includes("Cannot access contents")) {
+        errorMessage += "Please refresh the Threads.com page and try again.";
+      } else if (error.message.includes("content script")) {
+        errorMessage +=
+          "The extension needs to be reloaded. Please refresh the page.";
+      } else if (error.message.includes("Could not connect")) {
+        errorMessage = error.message;
+      } else if (error.message.includes("Threads.com")) {
+        errorMessage = error.message;
+      } else if (error.message.includes("length")) {
+        errorMessage +=
+          "Invalid response format. Please refresh the page and try again.";
+      } else {
+        errorMessage +=
+          error.message || "Make sure you're on Threads.com and logged in.";
+      }
+
+      this.showError(errorMessage);
+    } finally {
+      // Reset button state
+      button.disabled = false;
+      spinner.style.display = "none";
+      btnText.textContent = "Extract Threads";
+    }
+  }
+
+  updateCharCount(textarea) {
+    const count = textarea.value.length;
+    document.getElementById("charCount").textContent = `${count} characters`;
+  }
+
+  addWrittenThread() {
+    const composer = document.getElementById("threadComposer");
+    const text = composer.value.trim();
+
+    if (!text) {
+      this.showError("Please write some content first");
+      return;
+    }
+
+    // Split by double newlines (two enters) to get paragraphs
+    // But preserve the original text structure
+    const paragraphs = text.split(/\n\n+/).filter((p) => p.trim());
+
+    // Create thread object with proper paragraph structure
+    const threadData = {
+      text: text, // Keep the original text with all line breaks
+      paragraphs: paragraphs.map((p) => ({
+        text: p.trim(),
+        hasSpecialContent: /[^\x00-\x7F]/.test(p),
+      })),
+    };
+
+    // Add to queue with the full thread data
+    this.addThreadToQueue(threadData);
+
+    // Clear composer
+    composer.value = "";
+    this.updateCharCount(composer);
+
+    this.showSuccess("Thread added to queue!");
+  }
+
+  addThreadToQueue(thread) {
+    const id = generateId();
+    const threadData = {
+      id,
+      ...thread,
+      selected: true,
+    };
+
+    this.threadQueue.push(threadData);
+    this.renderThreadQueue();
+    this.updateQueueCount();
+    this.saveQueue();
+  }
+
+  renderThreadQueue() {
+    const container = document.getElementById("threadsList");
+    container.innerHTML = "";
+
+    this.threadQueue.forEach((thread, index) => {
+      const item = document.createElement("div");
+      item.className = "thread-item";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = `thread-${thread.id}`;
+      checkbox.checked = thread.selected;
+      checkbox.addEventListener("change", (e) => {
+        thread.selected = e.target.checked;
+        this.updateQueueCount();
+        this.saveQueue();
+      });
+
+      const label = document.createElement("label");
+      label.htmlFor = `thread-${thread.id}`;
+
+      const preview = document.createElement("div");
+      preview.className = "thread-preview";
+      const text = typeof thread === "string" ? thread : thread.text;
+      preview.textContent =
+        text.length > CONFIG.UI.MAX_THREAD_PREVIEW_LENGTH
+          ? text.substring(0, CONFIG.UI.MAX_THREAD_PREVIEW_LENGTH) + "..."
+          : text;
+
+      label.appendChild(preview);
+      item.appendChild(checkbox);
+      item.appendChild(label);
+      container.appendChild(item);
+    });
+  }
+
+  updateQueueCount() {
+    const selected = this.threadQueue.filter((t) => t.selected).length;
+    document.getElementById("queueCount").textContent = selected;
+    document.getElementById("startPosting").disabled =
+      selected === 0 || this.isPosting;
+  }
+
+  validateDelays() {
+    const minDelay = parseInt(document.getElementById("minDelay").value);
+    const maxDelay = parseInt(document.getElementById("maxDelay").value);
+
+    if (minDelay > maxDelay) {
+      document.getElementById("maxDelay").value = minDelay;
+    }
+
+    this.saveSettings();
+  }
+
+  async startPosting() {
+    const selectedThreads = this.threadQueue.filter((t) => t.selected);
+    if (selectedThreads.length === 0) return;
+
+    this.isPosting = true;
+
+    // Update UI
+    document.getElementById("startPosting").style.display = "none";
+    document.getElementById("stopPosting").style.display = "block";
+    document.getElementById("progressSection").style.display = "block";
+
+    // Disable controls
+    this.setControlsEnabled(false);
+
+    // Get delay settings
+    const minDelay = parseInt(document.getElementById("minDelay").value);
+    const maxDelay = parseInt(document.getElementById("maxDelay").value);
+
+    try {
+      // Send threads to background script
+      const response = await Messages.send("startPosting", {
+        threads: selectedThreads,
+        minDelay,
+        maxDelay,
+        tabId: this.currentTab.id,
+      });
+
+      if (response.success) {
+        // Posting started successfully
+        this.startProgressTracking();
+
+        // Log activity
+        licenseManager.logActivity("posting_started", {
+          count: selectedThreads.length,
+        });
+      } else {
+        throw new Error(response.error || "Failed to start posting");
+      }
+    } catch (error) {
+      Logger.error("Failed to start posting", error);
+      this.showError("Failed to start posting: " + error.message);
+      this.resetPostingState();
+    }
+  }
+
+  async stopPosting() {
+    try {
+      // Disable button immediately
+      const stopBtn = document.getElementById("stopPosting");
+      stopBtn.disabled = true;
+      stopBtn.textContent = "Stopping...";
+
+      // Send stop signal to both background and content
+      await Messages.send("stopPosting");
+
+      // Also send directly to content script
+      if (this.currentTab) {
+        await Messages.sendToTab(this.currentTab.id, "stopReposting", {});
+      }
+
+      // Log activity
+      licenseManager.logActivity("posting_stopped");
+    } catch (error) {
+      Logger.error("Failed to stop posting", error);
+      this.showError("Failed to stop posting");
+    }
+  }
+
+  startProgressTracking() {
+    // Update progress every 100ms
+    this.progressInterval = setInterval(() => {
+      this.updateProgress();
+    }, CONFIG.UI.PROGRESS_UPDATE_INTERVAL);
+  }
+
+  async updateProgress() {
+    try {
+      const status = await Messages.send("getPostingStatus");
+
+      if (status) {
+        // Update stats
+        document.getElementById("postedCount").textContent = status.posted;
+        document.getElementById("remainingCount").textContent =
+          status.remaining;
+
+        // Update progress bar
+        const progress = (status.posted / status.total) * 100;
+        document.getElementById("progressBar").style.width = `${progress}%`;
+
+        // Update status text
+        document.getElementById("currentStatus").textContent = status.message;
+
+        // Update countdown
+        if (status.nextPostIn) {
+          document.getElementById("nextPostTime").textContent = formatTime(
+            status.nextPostIn
+          );
+        } else {
+          document.getElementById("nextPostTime").textContent = "--:--";
+        }
+
+        // Check if posting is complete
+        if (status.complete) {
+          this.onPostingComplete(status);
+        }
+      }
+    } catch (error) {
+      Logger.error("Failed to update progress", error);
+    }
+  }
+
+  onPostingComplete(status) {
+    // Stop progress tracking
+    if (this.progressInterval) {
+      clearInterval(this.progressInterval);
+      this.progressInterval = null;
+    }
+
+    // Reset UI state
+    this.resetPostingState();
+
+    // Remove posted threads from queue
+    const postedIds = status.postedThreadIds || [];
+    this.threadQueue = this.threadQueue.filter(
+      (t) => !postedIds.includes(t.id)
+    );
+    this.renderThreadQueue();
+    this.updateQueueCount();
+    this.saveQueue();
+
+    // Show completion modal
+    const details = `Successfully posted ${status.posted} out of ${status.total} threads.`;
+    document.getElementById("successDetails").textContent = details;
+    document.getElementById("successModal").classList.add("show");
+
+    // Log activity
+    licenseManager.logActivity("posting_completed", {
+      posted: status.posted,
+      total: status.total,
+      stopped: status.stopped,
+    });
+  }
+
+  resetPostingState() {
+    this.isPosting = false;
+
+    // Reset UI
+    document.getElementById("startPosting").style.display = "block";
+    document.getElementById("stopPosting").style.display = "none";
+    document.getElementById("stopPosting").textContent = "Stop Posting";
+    document.getElementById("stopPosting").disabled = false;
+
+    // Re-enable controls
+    this.setControlsEnabled(true);
+
+    // Clear progress
+    document.getElementById("postedCount").textContent = "0";
+    document.getElementById("remainingCount").textContent = "0";
+    document.getElementById("nextPostTime").textContent = "--:--";
+    document.getElementById("progressBar").style.width = "0%";
+    document.getElementById("currentStatus").textContent = "Idle";
+  }
+
+  setControlsEnabled(enabled) {
+    const controls = [
+      "extractThreads",
+      "threadComposer",
+      "addToQueue",
+      "minDelay",
+      "maxDelay",
+      "threadCount",
+      "excludeLinks",
+      "randomOrder",
+      "clearQueue",
+    ];
+
+    controls.forEach((id) => {
+      const element = document.getElementById(id);
+      if (element) {
+        element.disabled = !enabled;
       }
     });
-  });
 
-  // Restore saved settings from chrome storage
-  function restoreState() {
-    chrome.storage.local.get(
-      [
-        "threadCount",
-        "minRepostDelay",
-        "maxRepostDelay",
-        "extractedThreads",
-        "isReposting",
-        "isStopping",
-      ],
-      (data) => {
-        // Restore input values
-        if (data.threadCount) {
-          threadCountInput.value = data.threadCount;
-        }
-        if (data.minRepostDelay) {
-          minRepostDelayInput.value = data.minRepostDelay;
-        }
-        if (data.maxRepostDelay) {
-          maxRepostDelayInput.value = data.maxRepostDelay;
-        }
+    // Disable mode switching
+    document.querySelectorAll(".mode-btn").forEach((btn) => {
+      btn.disabled = !enabled;
+    });
 
-        // Restore extracted threads
-        if (data.extractedThreads && data.extractedThreads.length > 0) {
-          populateThreadsList(data.extractedThreads);
-          repostThreadsBtn.disabled = false;
-        }
+    // Disable thread checkboxes
+    document
+      .querySelectorAll('.thread-item input[type="checkbox"]')
+      .forEach((cb) => {
+        cb.disabled = !enabled;
+      });
+  }
 
-        // Check if reposting is active based on storage
-        if (data.isReposting) {
-          setRepostingState(true);
+  clearQueue() {
+    if (this.isPosting) {
+      this.showError("Cannot clear queue while posting is in progress");
+      return;
+    }
 
-          // If stopping was requested
-          if (data.isStopping) {
-            stopRepostingBtn.textContent = "Stopping...";
-            stopRepostingBtn.disabled = true;
-          }
+    if (this.threadQueue.length === 0) return;
 
-          // Also verify with content script
-          checkRepostingStatus();
-        }
+    if (confirm("Are you sure you want to clear all threads from the queue?")) {
+      this.threadQueue = [];
+      this.renderThreadQueue();
+      this.updateQueueCount();
+      this.saveQueue();
+      this.showSuccess("Queue cleared");
+    }
+  }
+
+  async checkPostingStatus() {
+    try {
+      const status = await Messages.send("getPostingStatus");
+
+      if (status && status.isPosting) {
+        // Posting is in progress
+        this.isPosting = true;
+
+        // Update UI to show posting state
+        document.getElementById("startPosting").style.display = "none";
+        document.getElementById("stopPosting").style.display = "block";
+        document.getElementById("progressSection").style.display = "block";
+
+        // Disable controls
+        this.setControlsEnabled(false);
+
+        // Start progress tracking
+        this.startProgressTracking();
       }
+    } catch (error) {
+      Logger.warn("Failed to check posting status", error);
+    }
+  }
+
+  closeModal() {
+    document.getElementById("successModal").classList.remove("show");
+  }
+
+  showSuccess(message) {
+    const element = document.getElementById("statusMessage");
+    element.textContent = message;
+    element.className = "status-message success";
+
+    setTimeout(() => {
+      element.className = "status-message";
+    }, CONFIG.UI.NOTIFICATION_DURATION);
+  }
+
+  showError(message) {
+    const element = document.getElementById("statusMessage");
+    element.textContent = message;
+    element.className = "status-message error";
+
+    setTimeout(() => {
+      element.className = "status-message";
+    }, CONFIG.UI.NOTIFICATION_DURATION * 2);
+  }
+
+  showLicenseError(message) {
+    const element = document.getElementById("licenseError");
+    element.textContent = message;
+    element.classList.add("show");
+
+    setTimeout(() => {
+      element.classList.remove("show");
+    }, CONFIG.UI.NOTIFICATION_DURATION * 2);
+  }
+
+  async saveSettings() {
+    const settings = {
+      threadCount: parseInt(document.getElementById("threadCount").value),
+      minDelay: parseInt(document.getElementById("minDelay").value),
+      maxDelay: parseInt(document.getElementById("maxDelay").value),
+      excludeLinks: document.getElementById("excludeLinks").checked,
+      randomOrder: document.getElementById("randomOrder").checked,
+    };
+
+    await Storage.set(CONFIG.STORAGE_KEYS.SETTINGS, settings);
+  }
+
+  async saveQueue() {
+    await Storage.set(CONFIG.STORAGE_KEYS.THREAD_QUEUE, this.threadQueue);
+  }
+
+  async restoreState() {
+    // Restore settings
+    const settings = await Storage.get(CONFIG.STORAGE_KEYS.SETTINGS);
+    if (settings) {
+      document.getElementById("threadCount").value =
+        settings.threadCount || CONFIG.EXTENSION.DEFAULT_THREAD_COUNT;
+      document.getElementById("minDelay").value =
+        settings.minDelay || CONFIG.EXTENSION.DEFAULT_MIN_DELAY;
+      document.getElementById("maxDelay").value =
+        settings.maxDelay || CONFIG.EXTENSION.DEFAULT_MAX_DELAY;
+      document.getElementById("excludeLinks").checked =
+        settings.excludeLinks !== false;
+      document.getElementById("randomOrder").checked =
+        settings.randomOrder !== false;
+    }
+
+    // Restore thread queue
+    const queue = await Storage.get(CONFIG.STORAGE_KEYS.THREAD_QUEUE);
+    if (queue && Array.isArray(queue)) {
+      this.threadQueue = queue;
+      this.renderThreadQueue();
+      this.updateQueueCount();
+    }
+  }
+}
+
+// Initialize popup when DOM is ready
+document.addEventListener("DOMContentLoaded", async () => {
+  const popup = new PopupManager();
+  await popup.init();
+
+  // Handle messages from background script
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === "postingProgress") {
+      // Real-time progress update
+      popup.updateProgress();
+    } else if (message.action === "postingComplete") {
+      // Posting finished
+      popup.onPostingComplete(message.status);
+    } else if (message.action === "license_invalid") {
+      // License invalidated
+      popup.showLicenseSection();
+      popup.showLicenseError(message.message);
+    }
+  });
+});
+
+// Add this to popup.js temporarily for debugging:
+
+async function debugLicense() {
+  console.log("=== LICENSE DEBUG ===");
+
+  // Get stored license data
+  const licenseData = await Storage.get(CONFIG.STORAGE_KEYS.LICENSE);
+  console.log("Stored license data:", licenseData);
+
+  // Get license status
+  const status = licenseManager.getStatus();
+  console.log("License status:", status);
+
+  // Check dates
+  if (licenseData && licenseData.expiresAt) {
+    const now = new Date();
+    const expires = new Date(licenseData.expiresAt);
+    console.log("Current time:", now.toISOString());
+    console.log("Expires at:", expires.toISOString());
+    console.log("Is expired:", now > expires);
+    console.log("Time difference (ms):", expires - now);
+    console.log(
+      "Days left:",
+      Math.ceil((expires - now) / (24 * 60 * 60 * 1000))
     );
   }
 
-  // Restore state when popup loads
-  restoreState();
-});
+  // Try to verify with server
+  try {
+    const serverCheck = await licenseManager.verifyLicense();
+    console.log("Server verification result:", serverCheck);
+  } catch (error) {
+    console.error("Server verification error:", error);
+  }
+
+  console.log("=== END DEBUG ===");
+}
+
+// Call this in your init function or add a button to trigger it:
+// await debugLicense();

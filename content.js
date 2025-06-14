@@ -1,5 +1,30 @@
+// content.js
+
 // Content script for Threads.net thread extraction and reposting
 // Updated to support both English and Spanish languages and stopping functionality
+// Configuration directly in content script since we can't import
+const CONFIG = {
+  ANTI_DETECTION: {
+    TYPING: {
+      MIN_CHAR_DELAY: 50,
+      MAX_CHAR_DELAY: 150,
+      PARAGRAPH_PAUSE: 500,
+      MISTAKE_PROBABILITY: 0.02
+    },
+    SCROLLING: {
+      SCROLL_PAUSE_MIN: 200,
+      SCROLL_PAUSE_MAX: 800
+    },
+    MOUSE: {
+      MOVEMENT_PROBABILITY: 0.3,
+      MIN_MOVEMENT: 50,
+      MAX_MOVEMENT: 200
+    }
+  },
+  UI: {
+    MAX_THREAD_PREVIEW_LENGTH: 100
+  }
+};
 
 // Selectors based on the provided document
 const THREAD_CONTAINER_SELECTOR =
@@ -12,6 +37,14 @@ const BUTTON_TEXT = {
   CLOSE: ["Close", "Cerrar"],
   CANCEL: ["Cancel", "Cancelar"],
 };
+
+// Add after existing constants (around line 20)
+const MAX_THREADS_TO_EXTRACT = 100;
+const SCROLL_WAIT_TIME = 2000;
+const MAX_SCROLL_ATTEMPTS = 50;
+
+// For tracking processed threads (prevents duplicates during scrolling)
+const processedThreadIds = new Set();
 
 // Track application state to handle context-dependent buttons
 let appState = {
@@ -58,133 +91,246 @@ function log(message, level = "info") {
 }
 
 // Improved function to extract threads while preserving line breaks and ignoring UI elements
-function extractThreads(count) {
+async function extractThreads(
+  count,
+  excludeLinks = false,
+  randomOrder = false
+) {
   try {
-    const threadElements = document.querySelectorAll(THREAD_CONTAINER_SELECTOR);
     const threads = [];
+    let scrollAttempts = 0;
+    let lastHeight = document.documentElement.scrollHeight;
 
-    log(`Found ${threadElements.length} potential threads`, "info");
+    log(`Starting extraction of ${count} threads`, "info");
 
-    for (let i = 0; i < Math.min(count, threadElements.length); i++) {
-      // Get the thread element
-      const threadElement = threadElements[i];
+    // Keep extracting until we have enough threads or hit limits
+    while (threads.length < count && scrollAttempts < MAX_SCROLL_ATTEMPTS) {
+      // Get current visible thread elements
+      const threadElements = document.querySelectorAll(
+        THREAD_CONTAINER_SELECTOR
+      );
+      log(`Found ${threadElements.length} thread elements on page`, "info");
 
-      // Use more direct DOM approach to extract text with line breaks
-      // Look for paragraph elements or text nodes inside the thread container
-      const paragraphs = [];
+      // Process each visible thread
+      for (
+        let i = 0;
+        i < threadElements.length && threads.length < count;
+        i++
+      ) {
+        const threadElement = threadElements[i];
 
-      // First try to find specific content paragraphs and filter out UI elements
-      const paragraphElements = Array.from(
-        threadElement.querySelectorAll('div[dir="auto"]')
-      ).filter((el) => {
-        // Filter out UI elements like "Traducir" button by checking for common UI classes
-        // or parent elements that might indicate it's a UI component
-        const isUiElement =
-          el.classList.contains("x1q0g3np") || // Common UI class
-          el.closest('[role="button"]') || // Is or is inside a button
-          el.getAttribute("data-lexical-text") === "true" || // Lexical editor UI element
-          el.textContent.trim() === "Traducir"; // Explicitly filter out "Traducir"
+        // Skip if we've already processed this thread
+        const threadId = getThreadId(threadElement);
+        if (processedThreadIds.has(threadId)) {
+          continue;
+        }
 
-        return !isUiElement;
-      });
+        // Extract thread content using existing logic
+        const threadData = extractThreadContent(threadElement);
 
-      if (paragraphElements.length > 0) {
-        // If we find paragraph elements, extract text from each one
-        paragraphElements.forEach((para) => {
-          const text = para.textContent.trim();
-          if (text) {
-            // Check if this paragraph contains emojis or other special content that might need preservation
-            const hasSpecialContent =
-              para.querySelector("img") ||
-              para.querySelector("span[aria-label]") ||
-              /[^\x00-\x7F]/.test(text); // Contains non-ASCII characters (like emojis)
-
-            // If it has special content, try to preserve it with the original HTML
-            if (hasSpecialContent) {
-              log(
-                `Preserving special content in paragraph: ${text.substring(
-                  0,
-                  30
-                )}...`,
-                "info"
-              );
-              paragraphs.push({
-                text: text,
-                hasSpecialContent: true,
-                originalHTML: para.innerHTML,
-              });
-            } else {
-              paragraphs.push({
-                text: text,
-                hasSpecialContent: false,
-              });
-            }
+        if (threadData) {
+          // Check for links if excludeLinks is enabled
+          if (excludeLinks && containsLinks(threadElement)) {
+            log(
+              `Skipping thread with links: ${threadData.text.substring(
+                0,
+                50
+              )}...`,
+              "info"
+            );
+            processedThreadIds.add(threadId);
+            continue;
           }
-        });
-        log(
-          `Found ${paragraphs.length} paragraph elements with content`,
-          "info"
-        );
-      } else {
-        // Fallback to using innerText which should preserve line breaks
-        const rawText = threadElement.innerText;
-        // Split by newlines and filter out empty lines and UI elements like "Traducir"
-        const lines = rawText
-          .split(/\r?\n/)
-          .filter((line) => line.trim() && line.trim() !== "Traducir");
 
-        lines.forEach((line) => {
-          paragraphs.push({
-            text: line.trim(),
-            hasSpecialContent: /[^\x00-\x7F]/.test(line), // Check for emojis
-          });
-        });
-
-        log(
-          `Used innerText fallback, found ${paragraphs.length} lines`,
-          "info"
-        );
+          threads.push(threadData);
+          processedThreadIds.add(threadId);
+          log(`Extracted thread ${threads.length}/${count}`, "info");
+        }
       }
 
-      // Build the thread text with proper spacing
-      let threadText = "";
-      let paragraphTexts = [];
+      // Check if we need more threads
+      if (threads.length >= count) {
+        break;
+      }
 
-      paragraphs.forEach((para, idx) => {
-        paragraphTexts.push(para.text);
+      // Scroll to load more threads
+      log(
+        `Need more threads. Current: ${threads.length}, Target: ${count}. Scrolling...`,
+        "info"
+      );
 
-        // Log for debugging
-        log(
-          `Paragraph ${idx + 1}: ${para.text.substring(0, 50)}${
-            para.text.length > 50 ? "..." : ""
-          }`,
-          "info"
-        );
+      // Smooth scroll down
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        behavior: "smooth",
       });
 
-      // Join with double newlines to ensure proper spacing between paragraphs
-      threadText = paragraphTexts.join("\n\n");
+      // Wait for new content to load
+      await new Promise((resolve) => setTimeout(resolve, SCROLL_WAIT_TIME));
 
-      if (threadText) {
+      // Check if new content was loaded
+      const currentHeight = document.documentElement.scrollHeight;
+      if (currentHeight === lastHeight) {
+        scrollAttempts++;
         log(
-          `Extracted thread ${i + 1} with ${paragraphs.length} paragraphs`,
-          "info"
+          `No new content loaded. Attempt ${scrollAttempts}/${MAX_SCROLL_ATTEMPTS}`,
+          "warn"
         );
 
-        // Also store the original paragraphs with their special content info
-        // This will be used by the postThread function to better preserve formatting
-        threads.push({
-          text: threadText,
-          paragraphs: paragraphs,
-        });
+        // Try scrolling up a bit then down again
+        if (scrollAttempts % 3 === 0) {
+          window.scrollTo({
+            top: window.scrollY - 500,
+            behavior: "smooth",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          window.scrollTo({
+            top: document.documentElement.scrollHeight,
+            behavior: "smooth",
+          });
+          await new Promise((resolve) => setTimeout(resolve, SCROLL_WAIT_TIME));
+        }
+      } else {
+        scrollAttempts = 0; // Reset attempts on successful load
+        lastHeight = currentHeight;
       }
     }
 
+    // Clear processed IDs for next extraction
+    processedThreadIds.clear();
+
+    // Apply random order if requested
+    if (randomOrder && threads.length > 0) {
+      log("Shuffling threads in random order", "info");
+      return shuffleThreads(threads);
+    }
+
+    log(`Extraction complete. Extracted ${threads.length} threads`, "info");
     return threads;
   } catch (error) {
     log(`Error extracting threads: ${error.message}`, "error");
+    processedThreadIds.clear();
     return [];
   }
+}
+
+// Helper function to extract content from a single thread element
+function extractThreadContent(threadElement) {
+  try {
+    const paragraphs = [];
+
+    // First try to find specific content paragraphs and filter out UI elements
+    const paragraphElements = Array.from(
+      threadElement.querySelectorAll('div[dir="auto"]')
+    ).filter((el) => {
+      // Filter out UI elements like "Traducir" button by checking for common UI classes
+      const isUiElement =
+        el.classList.contains("x1q0g3np") || // Common UI class
+        el.closest('[role="button"]') || // Is or is inside a button
+        el.getAttribute("data-lexical-text") === "true" || // Lexical editor UI element
+        el.textContent.trim() === "Traducir"; // Explicitly filter out "Traducir"
+
+      return !isUiElement;
+    });
+
+    if (paragraphElements.length > 0) {
+      // If we find paragraph elements, extract text from each one
+      paragraphElements.forEach((para) => {
+        const text = para.textContent.trim();
+        if (text) {
+          // Check if this paragraph contains emojis or other special content
+          const hasSpecialContent =
+            para.querySelector("img") ||
+            para.querySelector("span[aria-label]") ||
+            /[^\x00-\x7F]/.test(text); // Contains non-ASCII characters (like emojis)
+
+          if (hasSpecialContent) {
+            log(
+              `Preserving special content in paragraph: ${text.substring(
+                0,
+                30
+              )}...`,
+              "info"
+            );
+            paragraphs.push({
+              text: text,
+              hasSpecialContent: true,
+              originalHTML: para.innerHTML,
+            });
+          } else {
+            paragraphs.push({
+              text: text,
+              hasSpecialContent: false,
+            });
+          }
+        }
+      });
+    } else {
+      // Fallback to using innerText which should preserve line breaks
+      const rawText = threadElement.innerText;
+      const lines = rawText
+        .split(/\r?\n/)
+        .filter((line) => line.trim() && line.trim() !== "Traducir");
+
+      lines.forEach((line) => {
+        paragraphs.push({
+          text: line.trim(),
+          hasSpecialContent: /[^\x00-\x7F]/.test(line),
+        });
+      });
+    }
+
+    // Build the thread text with proper spacing
+    const threadText = paragraphs.map((p) => p.text).join("\n\n");
+
+    if (threadText) {
+      return {
+        text: threadText,
+        paragraphs: paragraphs,
+      };
+    }
+
+    return null;
+  } catch (error) {
+    log(`Error extracting thread content: ${error.message}`, "error");
+    return null;
+  }
+}
+
+// Helper function to get unique ID for a thread
+function getThreadId(element) {
+  // Try to find a unique link
+  const link = element.querySelector('a[href*="/t/"], a[href*="/p/"]');
+  if (link && link.href) {
+    return link.href;
+  }
+
+  // Fallback to text content hash
+  const text = element.textContent.trim();
+  return text.substring(0, 100); // Use first 100 chars as ID
+}
+
+// Helper function to check if thread contains links
+function containsLinks(element) {
+  // Check for anchor tags
+  const hasAnchorTags = element.querySelectorAll("a[href]").length > 0;
+
+  // Check for URL patterns in text
+  const text = element.textContent || "";
+  const urlPattern = /https?:\/\/[^\s]+|www\.[^\s]+|\w+\.\w{2,}\/\S*/gi;
+  const hasUrlInText = urlPattern.test(text);
+
+  return hasAnchorTags || hasUrlInText;
+}
+
+// Helper function to shuffle threads randomly
+function shuffleThreads(threads) {
+  const shuffled = [...threads];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
 }
 
 // Function to check if a button contains any of the specified texts
@@ -923,44 +1069,61 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   log(`Received message: ${request.action}`, "info");
 
   if (request.action === "extractThreads") {
-    const extractedThreads = extractThreads(request.count);
-    log(`Extracted ${extractedThreads.length} threads`, "info");
+    const { count = 3, excludeLinks = false, randomOrder = false } = request;
 
-    // Store the full thread objects with formatting data in storage
-    try {
-      chrome.storage.local.set(
-        {
-          extractedThreadObjects: extractedThreads,
-        },
-        () => {
-          log("Stored thread objects with formatting data", "info");
+    (async () => {
+      try {
+        const extractedThreads = await extractThreads(
+          count,
+          excludeLinks,
+          randomOrder
+        );
+
+        log(`Extracted ${extractedThreads.length} threads`, "info");
+
+        // Store the full thread objects with formatting data in storage
+        try {
+          chrome.storage.local.set(
+            {
+              extractedThreadObjects: extractedThreads,
+            },
+            () => {
+              log("Stored thread objects with formatting data", "info");
+            }
+          );
+        } catch (e) {
+          log(`Error storing thread objects: ${e.message}`, "warn");
         }
-      );
-    } catch (e) {
-      log(`Error storing thread objects: ${e.message}`, "warn");
-    }
 
-    // Send only the text content to the popup for display
-    sendResponse({
-      threads: extractedThreads.map((thread) => thread.text),
-    });
+        // Ensure we're sending the correct response format
+        sendResponse({
+          success: true,
+          threads: extractedThreads,
+          error: null,
+        });
+      } catch (error) {
+        log(`Error in extractThreads: ${error.message}`, "error");
+        sendResponse({
+          success: false,
+          threads: [],
+          error: error.message || "Failed to extract threads",
+        });
+      }
+    })();
+
+    return true; // Keep channel open for async response
   } else if (request.action === "repostThreads") {
-    // Process threads sequentially with specified delay
     async function repostAllThreads() {
       const results = [];
       log(`Starting to repost ${request.threads.length} threads`, "info");
 
-      // Set the actively reposting flag to true
       appState.isActivelyReposting = true;
       appState.isStopping = false;
 
-      // Save reposting state to storage
       chrome.storage.local.set({ isReposting: true, isStopping: false });
 
-      // Get the full thread objects from storage if they exist
       let threadObjects = [];
       try {
-        // Try to get the full thread objects with formatting data
         chrome.storage.local.get(["extractedThreadObjects"], (data) => {
           if (data.extractedThreadObjects) {
             threadObjects = data.extractedThreadObjects;
@@ -974,54 +1137,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         log(`Error retrieving thread objects: ${e.message}`, "warn");
       }
 
-      // Reset the stop flag before starting
       appState.shouldStopReposting = false;
 
-      // Function to generate random delay
-      function getRandomDelay(min, max) {
-        // Generate random delay with milliseconds precision
-        const minMs = min * 1000;
-        const maxMs = max * 1000;
-        const randomMs = Math.random() * (maxMs - minMs) + minMs;
-
-        // Add random additional milliseconds (0-999ms) for more precision
-        const additionalMs = Math.floor(Math.random() * 1000);
-        const totalDelay = Math.floor(randomMs) + additionalMs;
-
-        const delayInSeconds = (totalDelay / 1000).toFixed(2);
-
-        // Enhanced console logging
-        console.log(`[Threads Repost Extension] Delay Generation:
-    Minimum Delay: ${min} seconds
-    Maximum Delay: ${max} seconds
-    Generated Delay: ${delayInSeconds} seconds (${totalDelay}ms)`);
-
-        console.log(
-          `%c✨ Random Delay Generated: ${delayInSeconds} seconds`,
-          "color: green; font-weight: bold;"
-        );
-
-        return totalDelay;
-      }
-
       for (let i = 0; i < request.threads.length; i++) {
-        // Send progress message to popup
+        const dynamicDelay = getRandomDelay(request.minDelay, request.maxDelay);
+
         chrome.runtime.sendMessage({
           action: "repostStatus",
           currentThread: i + 1,
           totalThreads: request.threads.length,
-          posted: i,
-          pending: request.threads.length - i,
+          posted: results.filter(Boolean).length,
+          failed: results.filter((r) => !r).length,
+          remaining: request.threads.length - (i + 1),
+          nextPostTime: Date.now() + dynamicDelay,
+          status: "waiting",
         });
 
-        // Check if we should stop before processing this thread
         if (appState.shouldStopReposting) {
           log("Stopping repost process per user request", "info");
           break;
         }
-
-        // Apply delay before EVERY thread (including the first)
-        const dynamicDelay = getRandomDelay(request.minDelay, request.maxDelay);
 
         console.log(
           `%c📊 Thread Progress: ${i}/${request.threads.length} posted, ${
@@ -1050,13 +1185,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           }, dynamicDelay);
         });
 
-        // Get the thread text
         const threadText = request.threads[i];
 
-        // Find the corresponding thread object with formatting data
         let threadObj = threadObjects.find((t) => t.text === threadText);
         if (!threadObj) {
-          // If we don't have the thread object, use the text as is
           threadObj = threadText;
           log(
             `Using plain text for thread ${i + 1} (no formatting data found)`,
@@ -1064,14 +1196,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           );
         }
 
-        // Generate a simple hash for this thread to track duplicates
         const threadHash = (
           typeof threadObj === "string" ? threadObj : threadObj.text
         )
           .slice(0, 50)
           .trim();
 
-        // Skip if we've already processed this thread in this session
         if (processedThreads.has(threadHash)) {
           log(`Skipping duplicate thread: ${threadHash}...`, "warn");
           results.push(false);
@@ -1080,20 +1210,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         log(`Processing thread ${i + 1}/${request.threads.length}`, "info");
 
-        // Close any open modals before starting
         await closeThreadModal();
 
-        // Post the thread
         const success = await postThread(threadObj);
 
         if (success) {
-          // Mark this thread as processed
           processedThreads.add(threadHash);
         }
 
         results.push(success);
 
-        // Add progress logging after each thread is posted
         const posted = results.filter(Boolean).length;
         const pending = request.threads.length - (i + 1);
 
@@ -1110,50 +1236,104 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         );
       }
 
-      // Notify that reposting is complete
       chrome.runtime.sendMessage({
         action: "repostComplete",
       });
 
-      // Reset the flags after completion
       appState.shouldStopReposting = false;
       appState.isActivelyReposting = false;
       appState.isStopping = false;
 
-      // Update storage
       chrome.storage.local.set({ isReposting: false, isStopping: false });
 
-      // Send back the final results
       const response = {
-        success: results.some((result) => result), // At least one success
+        success: results.some((result) => result),
         successfulPosts: results.filter(Boolean).length,
         totalPosts: results.length,
-        stopped: appState.shouldStopReposting, // Indicate if process was stopped
+        stopped: appState.shouldStopReposting,
       };
 
       log(`Repost process complete: ${JSON.stringify(response)}`, "info");
       sendResponse(response);
     }
 
-    // Start the async process and keep messaging channel open
     repostAllThreads();
-    return true; // Keep the message channel open for async response
+    return true;
   } else if (request.action === "stopReposting") {
-    // Set the flags to stop the reposting process
     appState.shouldStopReposting = true;
     appState.isStopping = true;
 
-    // Save to storage
     chrome.storage.local.set({ isStopping: true });
 
     log("Received stop reposting request", "info");
+
+    if (window.currentPostingTimeout) {
+      clearTimeout(window.currentPostingTimeout);
+    }
+
     sendResponse({ success: true });
   } else if (request.action === "getRepostingStatus") {
-    // Return the current status of reposting
     sendResponse({
       isReposting: appState.isActivelyReposting,
       isStopping: appState.isStopping,
     });
+  } else if (request.action === "postSingleThread") {
+    async function postSingleThread() {
+      const { thread } = request;
+
+      try {
+        const threadData =
+          typeof thread === "string"
+            ? {
+                text: thread,
+                paragraphs: thread
+                  .split("\n\n")
+                  .map((p) => ({ text: p.trim() })),
+              }
+            : thread;
+
+        const success = await postThread(threadData);
+
+        sendResponse({
+          success: success,
+          error: success ? null : "Failed to post thread",
+        });
+      } catch (error) {
+        log(`Error posting single thread: ${error.message}`, "error");
+        sendResponse({
+          success: false,
+          error: error.message || "Failed to post thread",
+        });
+      }
+    }
+
+    postSingleThread();
+    return true;
+  } else if (request.action === "postCustomThread") {
+    async function postCustomThread() {
+      const { thread } = request;
+
+      // Handle both string and object formats
+      const threadData =
+        typeof thread === "string"
+          ? {
+              text: thread,
+              paragraphs: thread
+                .split(/\n\n+/)
+                .map((p) => ({
+                  text: p.trim(),
+                  hasSpecialContent: /[^\x00-\x7F]/.test(p.trim()),
+                }))
+                .filter((p) => p.text), // Filter out empty paragraphs
+            }
+          : thread;
+
+      const success = await postThread(threadData);
+      sendResponse({ success, error: success ? null : "Failed to post" });
+    }
+
+    postCustomThread();
+    return true;
   }
 });
 
@@ -1161,3 +1341,45 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 log(
   "Content script loaded successfully with improved stop functionality and Spanish language support"
 );
+
+function simulateHumanDelay() {
+  const base = getRandomDelay(50, 150);
+  const variation = (Math.random() - 0.5) * 0.2 * base;
+  return Math.floor(base + variation);
+}
+
+// Enhanced logging for production
+function productionLog(message, level = "info") {
+  if (level === "error") {
+    console.error(`[ThreadsPro] ${message}`);
+  } else if (localStorage.getItem('threadspro_debug') === 'true') {
+    console.log(`[ThreadsPro] ${message}`);
+  }
+}
+
+// Function to generate random delay
+function getRandomDelay(min, max) {
+  // Generate random delay with milliseconds precision
+  const minMs = min * 1000;
+  const maxMs = max * 1000;
+  const randomMs = Math.random() * (maxMs - minMs) + minMs;
+
+  // Add random additional milliseconds (0-999ms) for more precision
+  const additionalMs = Math.floor(Math.random() * 1000);
+  const totalDelay = Math.floor(randomMs) + additionalMs;
+
+  const delayInSeconds = (totalDelay / 1000).toFixed(2);
+
+  // Enhanced console logging
+  console.log(`[Threads Repost Extension] Delay Generation:
+Minimum Delay: ${min} seconds
+Maximum Delay: ${max} seconds
+Generated Delay: ${delayInSeconds} seconds (${totalDelay}ms)`);
+
+  console.log(
+    `%c✨ Random Delay Generated: ${delayInSeconds} seconds`,
+    "color: green; font-weight: bold;"
+  );
+
+  return totalDelay;
+}
