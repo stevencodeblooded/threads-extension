@@ -312,15 +312,45 @@ function getThreadId(element) {
 
 // Helper function to check if thread contains links
 function containsLinks(element) {
-  // Check for anchor tags
-  const hasAnchorTags = element.querySelectorAll("a[href]").length > 0;
+  // Check for anchor tags that are actual external links (not just UI elements)
+  const anchorTags = element.querySelectorAll("a[href]");
+  let hasRealLinks = false;
 
-  // Check for URL patterns in text
-  const text = element.textContent || "";
-  const urlPattern = /https?:\/\/[^\s]+|www\.[^\s]+|\w+\.\w{2,}\/\S*/gi;
-  const hasUrlInText = urlPattern.test(text);
+  for (const anchor of anchorTags) {
+    const href = anchor.getAttribute("href");
+    // Check if it's a real external link (not just a hashtag or user mention)
+    if (
+      href &&
+      (href.startsWith("http://") ||
+        href.startsWith("https://") ||
+        href.startsWith("www."))
+    ) {
+      hasRealLinks = true;
+      break;
+    }
+  }
 
-  return hasAnchorTags || hasUrlInText;
+  // Also check for URL patterns in the actual text content
+  // Get only the text content, not including UI elements
+  const textElements = element.querySelectorAll('div[dir="auto"]');
+  let combinedText = "";
+
+  textElements.forEach((el) => {
+    // Skip UI elements
+    if (
+      !el.closest('[role="button"]') &&
+      el.textContent.trim() !== "Traducir"
+    ) {
+      combinedText += el.textContent + " ";
+    }
+  });
+
+  // More specific URL pattern that avoids false positives
+  const urlPattern =
+    /(?:https?:\/\/|www\.)[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|(?:https?:\/\/|www\.)[a-zA-Z0-9]+\.[^\s]{2,}/gi;
+  const hasUrlInText = urlPattern.test(combinedText);
+
+  return hasRealLinks || hasUrlInText;
 }
 
 // Helper function to shuffle threads randomly

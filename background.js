@@ -172,19 +172,21 @@ class BackgroundService {
     const currentThread =
       this.postingState.threads[this.postingState.currentIndex];
 
-    // Calculate delay
-    const delay =
-      this.postingState.currentIndex === 0
-        ? 0 // No delay for first thread
-        : this.getRandomDelay(
-            this.postingState.minDelay,
-            this.postingState.maxDelay
-          );
+    // Calculate delay - ALWAYS add delay, even for first thread
+    const delay = this.getRandomDelay(
+      this.postingState.minDelay,
+      this.postingState.maxDelay
+    );
 
     this.postingState.nextPostTime = Date.now() + delay;
 
     // Update progress
     this.sendProgressUpdate();
+
+    // Log the delay for first thread
+    if (this.postingState.currentIndex === 0) {
+      Logger.log(`Waiting ${delay / 1000} seconds before posting first thread`);
+    }
 
     // Wait for delay
     this.postingTimer = setTimeout(async () => {
