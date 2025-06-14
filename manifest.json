@@ -3,7 +3,14 @@
   "name": "Threads Pro Bot",
   "version": "2.0.0",
   "description": "Professional Threads automation tool with advanced features",
-  "permissions": ["activeTab", "storage", "alarms", "scripting", "tabs"],
+  "permissions": [
+    "activeTab",
+    "storage",
+    "alarms",
+    "scripting",
+    "tabs",
+    "windows"
+  ],
   "host_permissions": [
     "*://www.threads.com/*",
     "*://*.threads.com/*",
@@ -29,7 +36,7 @@
     }
   ],
   "action": {
-    "default_popup": "popup.html",
+    "default_title": "Threads Pro Bot",
     "default_icon": {
       "16": "assets/icon.png",
       "48": "assets/icon.png",
@@ -43,7 +50,14 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["utils.js"],
+      "resources": [
+        "utils.js",
+        "popup.html",
+        "popup.css",
+        "config.js",
+        "license.js",
+        "lang.js"
+      ],
       "matches": [
         "*://www.threads.com/*",
         "*://*.threads.com/*",

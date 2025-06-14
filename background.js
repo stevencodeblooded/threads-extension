@@ -71,6 +71,42 @@ class BackgroundService {
         sendResponse({ success: true });
         break;
 
+      case "focusExtensionWindow":
+        (async () => {
+          const windowId = await Storage.get("extensionWindowId");
+          if (windowId) {
+            try {
+              await chrome.windows.update(windowId, { focused: true });
+              sendResponse({ success: true });
+            } catch (error) {
+              sendResponse({ success: false, error: error.message });
+            }
+          }
+        })();
+        return true; // Keep channel open for async
+
+      case "getThreadsTab":
+        (async () => {
+          // Query ALL windows, not just current window
+          const threadsTabs = await chrome.tabs.query({
+            url: [
+              "https://www.threads.com/*",
+              "https://*.threads.com/*",
+              "https://threads.net/*",
+              "https://*.threads.net/*",
+            ],
+          });
+
+          // Debug logging
+          Logger.log(`Found ${threadsTabs.length} Threads tabs`);
+          if (threadsTabs.length > 0) {
+            Logger.log(`First tab URL: ${threadsTabs[0].url}`);
+          }
+
+          sendResponse({ tab: threadsTabs[0] || null });
+        })();
+        return true; // Keep channel open for async
+
       default:
         sendResponse({ success: false, error: "Unknown action" });
     }
@@ -427,3 +463,80 @@ const keepAlive = () => {
 
 // Keep alive every 20 seconds
 setInterval(keepAlive, 20000);
+
+// Detached popup window handler
+chrome.action.onClicked.addListener(async () => {
+  Logger.log("Extension icon clicked - opening detached window");
+
+  // Query ALL tabs to debug
+  const allTabs = await chrome.tabs.query({});
+  Logger.log(`Total tabs open: ${allTabs.length}`);
+
+  // Log tabs that might be Threads
+  const threadLikeTabs = allTabs.filter(
+    (tab) =>
+      tab.url &&
+      (tab.url.includes("threads.com") || tab.url.includes("threads.net"))
+  );
+  Logger.log(`Tabs containing 'threads': ${threadLikeTabs.length}`);
+  threadLikeTabs.forEach((tab) => {
+    Logger.log(`Thread-like tab: ${tab.url}`);
+  });
+
+  // Just check if any Threads tab exists, don't open new ones
+  let threadsTabs = await chrome.tabs.query({
+    url: [
+      "https://www.threads.com/*",
+      "https://*.threads.com/*",
+      "https://threads.net/*",
+      "https://*.threads.net/*",
+    ],
+  });
+
+  Logger.log(`Found ${threadsTabs.length} Threads tabs with URL query`);
+
+  let threadsTab = threadsTabs[0];
+
+  // Store the tab ID if found (for reference, not for opening)
+  if (threadsTab) {
+    await Storage.set("threadsTabId", threadsTab.id);
+    Logger.log(`Found existing Threads tab: ${threadsTab.url}`);
+  } else {
+    Logger.log("No Threads tab found - user can open one when needed");
+  }
+
+  // Get or create extension window
+  let response = await Storage.get("extensionWindowId");
+  let windowId = response || 0;
+
+  // Try to focus existing window
+  try {
+    await chrome.windows.update(windowId, { focused: true });
+    Logger.log("Focused existing extension window");
+  } catch (error) {
+    // Window doesn't exist, create new one
+    Logger.log("Creating new extension window");
+
+    const window = await chrome.windows.create({
+      url: chrome.runtime.getURL("popup.html"),
+      type: "popup",
+      focused: true,
+      height: 700,
+      width: 450,
+      left: 100,
+      top: 100,
+    });
+
+    await Storage.set("extensionWindowId", window.id);
+  }
+});
+
+// Handle window closed event
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  const storedWindowId = await Storage.get("extensionWindowId");
+  if (windowId === storedWindowId) {
+    Logger.log("Extension window closed");
+    await Storage.remove("extensionWindowId");
+  }
+});
+

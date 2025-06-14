@@ -1098,6 +1098,12 @@ const processedThreads = new Set();
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   log(`Received message: ${request.action}`, "info");
 
+  // ADD THIS PING HANDLER FIRST
+  if (request.action === "ping") {
+    sendResponse({ success: true, message: "Content script is ready" });
+    return true;
+  }
+
   if (request.action === "extractThreads") {
     const { count = 3, excludeLinks = false, randomOrder = false } = request;
 

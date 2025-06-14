@@ -13,21 +13,54 @@ class PopupManager {
   async init() {
     Logger.log("Initializing popup");
 
-    await debugLicense();
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Get current tab
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    this.currentTab = tabs[0];
+    const currentWindow = await chrome.windows.getCurrent();
+    const isDetached =
+      currentWindow.type === "popup" &&
+      currentWindow.id !== chrome.windows.WINDOW_ID_CURRENT;
 
-    if (
-      !this.currentTab.url.includes("threads.com") &&
-      !this.currentTab.url.includes("threads.net")
-    ) {
-      this.showError("Please navigate to Threads.com to use this extension");
-      return;
+    Logger.log(
+      `Window type: ${currentWindow.type}, Is detached: ${isDetached}`
+    );
+
+    if (isDetached) {
+      Logger.log("Running in detached window mode");
+
+      let retries = 3;
+      let response = null;
+
+      while (retries > 0 && (!response || !response.tab)) {
+        response = await Messages.send("getThreadsTab");
+        Logger.log("getThreadsTab response:", response);
+
+        if (!response || !response.tab) {
+          Logger.log(`No tab found, retrying... (${retries} retries left)`);
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          retries--;
+        }
+      }
+
+      this.currentTab = response?.tab || null;
+
+      if (!this.currentTab) {
+        this.showError(
+          "No Threads tab found. Please open any Threads.com page to start extracting."
+        );
+        this.currentTab = { url: "" };
+      } else {
+        Logger.log(`Found Threads tab: ${this.currentTab.url}`);
+        this.showSuccess("Threads tab detected! Ready to extract.");
+      }
+    } else {
+      const tabs = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      this.currentTab = tabs[0];
+      Logger.log(`Popup mode - current tab: ${this.currentTab?.url}`);
     }
 
-    // Initialize license
     const isLicensed = await licenseManager.init();
     if (isLicensed) {
       this.showMainInterface();
@@ -35,14 +68,52 @@ class PopupManager {
       this.showLicenseSection();
     }
 
-    // Setup event listeners
     this.setupEventListeners();
 
-    // Restore state
     await this.restoreState();
 
-    // Check if posting is in progress
     await this.checkPostingStatus();
+
+    if (isDetached) {
+      this.setupThreadsTabMonitoring();
+    }
+  }
+
+  setupThreadsTabMonitoring() {
+    // Monitor for tab changes
+    setInterval(async () => {
+      const response = await Messages.send("getThreadsTab");
+      const newTab = response.tab;
+
+      if (!newTab && this.currentTab && this.currentTab.url) {
+        // Tab was closed, just update status
+        this.showError(
+          "Threads tab was closed. Please open any Threads.com page to continue."
+        );
+        this.currentTab = { url: "" }; // Dummy tab to prevent errors
+        return;
+      }
+
+      if (newTab && (!this.currentTab || !this.currentTab.url)) {
+        // New tab opened, clear error
+        this.showSuccess("Threads tab detected! You can now extract threads.");
+        this.currentTab = newTab;
+      }
+
+      // Update current tab if it changed
+      if (newTab && this.currentTab && this.currentTab.id !== newTab.id) {
+        Logger.log("Threads tab changed, updating reference");
+        this.currentTab = newTab;
+
+        // Test if content script is ready (but don't inject automatically)
+        try {
+          await Messages.sendToTab(newTab.id, "ping", {});
+        } catch (error) {
+          Logger.log("Content script not ready on new tab");
+          // Don't auto-inject, let the user refresh if needed
+        }
+      }
+    }, 2000); // Check every 2 seconds
   }
 
   setupEventListeners() {
@@ -212,6 +283,19 @@ class PopupManager {
     btnText.textContent = "Extracting...";
 
     try {
+      // In detached mode, always get fresh tab reference
+      const currentWindow = await chrome.windows.getCurrent();
+      const isDetached = currentWindow.type === "popup";
+
+      if (isDetached) {
+        const response = await Messages.send("getThreadsTab");
+        this.currentTab = response.tab;
+
+        if (!this.currentTab) {
+          throw new Error("Threads tab not found. Please open Threads.com");
+        }
+      }
+
       // Check if we're on the correct site
       if (
         !this.currentTab.url.includes("threads.com") &&
@@ -229,6 +313,13 @@ class PopupManager {
         "info"
       );
 
+      // Focus the Threads tab before extraction
+      if (isDetached) {
+        await chrome.tabs.update(this.currentTab.id, { active: true });
+        // Small delay to ensure tab is focused
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
       // Send message to content script
       let response;
       try {
@@ -243,43 +334,53 @@ class PopupManager {
         );
       } catch (sendError) {
         Logger.error("Error sending message to content script", sendError);
-        throw new Error(
-          "Could not connect to the page. Please refresh and try again."
+
+        // Try to reinject content script
+        await chrome.scripting.executeScript({
+          target: { tabId: this.currentTab.id },
+          files: ["content.js"],
+        });
+
+        // Wait and retry
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        response = await Messages.sendToTab(
+          this.currentTab.id,
+          "extractThreads",
+          {
+            count,
+            excludeLinks,
+            randomOrder,
+          }
         );
       }
 
       // Log the full response for debugging
       Logger.log("Extract threads response:", response);
 
-      // Check if response exists
+      // Rest of the method remains the same...
       if (!response) {
         throw new Error(
           "No response from content script. Please refresh the page and try again."
         );
       }
 
-      // Handle the response based on content script format
       if (response.success === true) {
-        // Check if threads exist in response
         if (!response.threads) {
           throw new Error("No threads data in response");
         }
 
-        // Ensure threads is an array
         const threads = Array.isArray(response.threads) ? response.threads : [];
 
         if (threads.length > 0) {
-          // Store both display and full thread data
           await Storage.set("extractedThreadObjects", threads);
 
-          // Add each thread to queue
           threads.forEach((thread) => {
             this.addThreadToQueue(thread);
           });
 
           this.showSuccess(`Extracted ${threads.length} threads successfully!`);
 
-          // Log activity
           licenseManager.logActivity("threads_extracted", {
             count: threads.length,
           });
@@ -289,14 +390,12 @@ class PopupManager {
           );
         }
       } else {
-        // Handle extraction failure
         const errorMessage = response.error || "Failed to extract threads";
         throw new Error(errorMessage);
       }
     } catch (error) {
       Logger.error("Failed to extract threads", error);
 
-      // Provide specific error messages based on the error type
       let errorMessage = "Failed to extract threads. ";
 
       if (error.message.includes("Cannot access contents")) {
@@ -318,7 +417,6 @@ class PopupManager {
 
       this.showError(errorMessage);
     } finally {
-      // Reset button state
       button.disabled = false;
       spinner.style.display = "none";
       btnText.textContent = "Extract Threads";
