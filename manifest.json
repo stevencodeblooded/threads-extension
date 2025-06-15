@@ -17,7 +17,8 @@
     "*://threads.net/*",
     "*://*.threads.net/*",
     "http://localhost:3000/*",
-    "http://127.0.0.1:3000/*"
+    "http://127.0.0.1:3000/*",
+    "https://scratch-certain-gravity.glitch.me/*"
   ],
   "background": {
     "service_worker": "background.js"

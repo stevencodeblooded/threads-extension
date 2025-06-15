@@ -117,6 +117,23 @@ class PopupManager {
   }
 
   setupEventListeners() {
+    const logoutBtn = document.getElementById("logoutBtn");
+    if (logoutBtn) {
+      logoutBtn.addEventListener("click", () => this.logout());
+    }
+
+    // Add this validation to thread count input
+    document.getElementById("threadCount").addEventListener("input", (e) => {
+      const licenseStatus = licenseManager.getStatus();
+      const maxThreads = licenseStatus.features?.maxThreads || 20;
+
+      if (parseInt(e.target.value) > maxThreads) {
+        e.target.value = maxThreads;
+        this.showError(
+          `Your license allows extracting up to ${maxThreads} threads at a time.`
+        );
+      }
+    });
     // License activation
     document
       .getElementById("activateLicense")
@@ -234,12 +251,11 @@ class PopupManager {
 
     // Update license status
     const status = licenseManager.getStatus();
-    console.log("License status in popup:", status); // Debug
+    console.log("License status in popup:", status);
 
     if (status.active || status.email) {
-      // Show info even if expired
       let licenseText = "Licensed";
-      let licenseClass = "license-status"; // default class
+      let licenseClass = "license-status";
 
       if (status.isExpired) {
         licenseText = "Licensed (Expired)";
@@ -254,6 +270,59 @@ class PopupManager {
       const statusElement = document.getElementById("licenseStatus");
       statusElement.textContent = licenseText;
       statusElement.className = licenseClass;
+
+      // Show email in license management
+      const emailElement = document.getElementById("licenseEmail");
+      if (emailElement) {
+        emailElement.textContent = status.email || "";
+      }
+
+      // Show license type
+      const licenseData = licenseManager.licenseData;
+      if (licenseData && licenseData.type) {
+        const typeElement = document.getElementById("licenseType");
+        if (typeElement) {
+          typeElement.textContent = licenseData.type.toUpperCase();
+          typeElement.className = `license-type ${licenseData.type}`;
+        }
+      }
+
+      // Set thread count limits based on license
+      this.updateThreadCountLimit();
+    }
+  }
+
+  async logout() {
+    if (
+      confirm(
+        "Are you sure you want to logout? You'll need to re-enter your license key to use the extension again."
+      )
+    ) {
+      try {
+        // Deactivate license
+        await licenseManager.deactivateLicense();
+
+        // Clear all stored data
+        await Storage.clear();
+
+        // Reset state
+        this.threadQueue = [];
+        this.isPosting = false;
+
+        // Show license section
+        this.showLicenseSection();
+
+        // Show success message
+        this.showSuccess("Logged out successfully");
+
+        // Reload extension to clear everything
+        setTimeout(() => {
+          window.location.reload();
+        }, 1000);
+      } catch (error) {
+        Logger.error("Logout error:", error);
+        this.showError("Failed to logout properly");
+      }
     }
   }
 
@@ -283,6 +352,10 @@ class PopupManager {
     btnText.textContent = "Extracting...";
 
     try {
+      // Get license status to check limits
+      const licenseStatus = licenseManager.getStatus();
+      const maxThreadsAllowed = licenseStatus.features?.maxThreads || 20; // Default to trial limit
+
       // In detached mode, always get fresh tab reference
       const currentWindow = await chrome.windows.getCurrent();
       const isDetached = currentWindow.type === "popup";
@@ -304,12 +377,22 @@ class PopupManager {
         throw new Error("Please navigate to Threads.com to use this extension");
       }
 
-      const count = parseInt(document.getElementById("threadCount").value);
+      let count = parseInt(document.getElementById("threadCount").value);
       const excludeLinks = document.getElementById("excludeLinks").checked;
       const randomOrder = document.getElementById("randomOrder").checked;
 
+      // ENFORCE LICENSE LIMIT
+      if (count > maxThreadsAllowed) {
+        this.showError(
+          `Your license allows extracting up to ${maxThreadsAllowed} threads at a time. Adjusting to maximum allowed.`
+        );
+        count = maxThreadsAllowed;
+        // Update the input field to show the adjusted value
+        document.getElementById("threadCount").value = maxThreadsAllowed;
+      }
+
       Logger.log(
-        `Extracting ${count} threads from ${this.currentTab.url}`,
+        `Extracting ${count} threads from ${this.currentTab.url} (License limit: ${maxThreadsAllowed})`,
         "info"
       );
 
@@ -358,7 +441,6 @@ class PopupManager {
       // Log the full response for debugging
       Logger.log("Extract threads response:", response);
 
-      // Rest of the method remains the same...
       if (!response) {
         throw new Error(
           "No response from content script. Please refresh the page and try again."
@@ -420,6 +502,26 @@ class PopupManager {
       button.disabled = false;
       spinner.style.display = "none";
       btnText.textContent = "Extract Threads";
+    }
+  }
+
+  updateThreadCountLimit() {
+    const licenseStatus = licenseManager.getStatus();
+    const maxThreads = licenseStatus.features?.maxThreads || 20;
+
+    // Update the max attribute on the input
+    const threadCountInput = document.getElementById("threadCount");
+    threadCountInput.max = maxThreads;
+
+    // Update the display span
+    const maxDisplay = document.getElementById("maxThreadsDisplay");
+    if (maxDisplay) {
+      maxDisplay.textContent = maxThreads;
+    }
+
+    // If current value exceeds limit, adjust it
+    if (parseInt(threadCountInput.value) > maxThreads) {
+      threadCountInput.value = maxThreads;
     }
   }
 
@@ -819,8 +921,17 @@ class PopupManager {
     // Restore settings
     const settings = await Storage.get(CONFIG.STORAGE_KEYS.SETTINGS);
     if (settings) {
-      document.getElementById("threadCount").value =
-        settings.threadCount || CONFIG.EXTENSION.DEFAULT_THREAD_COUNT;
+      // Get license limits
+      const licenseStatus = licenseManager.getStatus();
+      const maxThreads = licenseStatus.features?.maxThreads || 20;
+
+      // Ensure thread count doesn't exceed license limit
+      const threadCount = Math.min(
+        settings.threadCount || CONFIG.EXTENSION.DEFAULT_THREAD_COUNT,
+        maxThreads
+      );
+
+      document.getElementById("threadCount").value = threadCount;
       document.getElementById("minDelay").value =
         settings.minDelay || CONFIG.EXTENSION.DEFAULT_MIN_DELAY;
       document.getElementById("maxDelay").value =
@@ -830,6 +941,9 @@ class PopupManager {
       document.getElementById("randomOrder").checked =
         settings.randomOrder !== false;
     }
+
+    // Update thread count limit display
+    this.updateThreadCountLimit();
 
     // Restore thread queue
     const queue = await Storage.get(CONFIG.STORAGE_KEYS.THREAD_QUEUE);

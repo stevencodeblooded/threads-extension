@@ -5,10 +5,10 @@ const CONFIG = {
   // API Configuration
   API: {
     // For development/testing
-    BASE_URL: "http://localhost:3000/api",
+    // BASE_URL: "http://localhost:3000/api",
 
     // For production, you'll need to deploy your backend and use:
-    // BASE_URL: "https://domain.com/api",
+    BASE_URL: "https://scratch-certain-gravity.glitch.me/api",
     ENDPOINTS: {
       VALIDATE_LICENSE: "/license/validate",
       CHECK_LICENSE: "/license/check",

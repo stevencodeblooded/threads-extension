@@ -29,7 +29,17 @@
       <div class="header">
         <img src="assets/icon.png" alt="Threads Pro" class="logo" />
         <h1>Threads Pro Bot</h1>
-        <span class="license-status" id="licenseStatus">Licensed</span>
+        <div class="license-info-header">
+          <span class="license-status" id="licenseStatus">Licensed</span>
+          <span class="license-type" id="licenseType"></span>
+        </div>
+      </div>
+
+      <div class="license-management">
+        <div class="license-info-display">
+          <span class="license-email" id="licenseEmail"></span>
+          <button class="logout-btn" id="logoutBtn">Logout</button>
+        </div>
       </div>
 
       <!-- Mode Toggle -->
@@ -43,7 +53,10 @@
       <!-- Extract Mode Section -->
       <div id="extractSection" class="mode-section">
         <div class="input-group">
-          <label>Number of Threads to Extract:</label>
+          <label for="threadCount"
+            >Number of Threads to Extract: (Max:
+            <span id="maxThreadsDisplay">-</span>)</label
+          >
           <input type="number" id="threadCount" min="1" max="100" value="5" />
         </div>
 
