@@ -179,6 +179,11 @@ class PopupManager {
       .getElementById("clearQueue")
       .addEventListener("click", () => this.clearQueue());
 
+    // Export threads
+    document
+      .getElementById("exportThreads")
+      .addEventListener("click", () => this.exportThreadsToTXT());
+
     // Modal close
     document.querySelectorAll(".close-btn, .modal-close").forEach((btn) => {
       btn.addEventListener("click", () => this.closeModal());
@@ -620,8 +625,15 @@ class PopupManager {
   }
 
   validateDelays() {
-    const minDelay = parseInt(document.getElementById("minDelay").value);
-    const maxDelay = parseInt(document.getElementById("maxDelay").value);
+    // Get delay settings (convert minutes to seconds)
+    const minDelayMinutes = parseFloat(
+      document.getElementById("minDelay").value
+    );
+    const maxDelayMinutes = parseFloat(
+      document.getElementById("maxDelay").value
+    );
+    const minDelay = Math.round(minDelayMinutes * 60); // Convert to seconds
+    const maxDelay = Math.round(maxDelayMinutes * 60); // Convert to seconds
 
     if (minDelay > maxDelay) {
       document.getElementById("maxDelay").value = minDelay;
@@ -644,9 +656,15 @@ class PopupManager {
     // Disable controls
     this.setControlsEnabled(false);
 
-    // Get delay settings
-    const minDelay = parseInt(document.getElementById("minDelay").value);
-    const maxDelay = parseInt(document.getElementById("maxDelay").value);
+    // Get delay settings (convert minutes to seconds)
+    const minDelayMinutes = parseFloat(
+      document.getElementById("minDelay").value
+    );
+    const maxDelayMinutes = parseFloat(
+      document.getElementById("maxDelay").value
+    );
+    const minDelay = Math.round(minDelayMinutes * 60); // Convert to seconds
+    const maxDelay = Math.round(maxDelayMinutes * 60); // Convert to seconds
 
     try {
       // Send threads to background script
@@ -722,11 +740,15 @@ class PopupManager {
         // Update status text
         document.getElementById("currentStatus").textContent = status.message;
 
-        // Update countdown
-        if (status.nextPostIn) {
-          document.getElementById("nextPostTime").textContent = formatTime(
-            status.nextPostIn
-          );
+        // Update countdown - Fix the display
+        if (status.nextPostIn !== undefined && status.nextPostIn > 0) {
+          const minutes = Math.floor(status.nextPostIn / 60);
+          const seconds = status.nextPostIn % 60;
+          document.getElementById("nextPostTime").textContent = `${minutes
+            .toString()
+            .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+        } else if (status.isPosting) {
+          document.getElementById("nextPostTime").textContent = "Posting...";
         } else {
           document.getElementById("nextPostTime").textContent = "--:--";
         }
@@ -843,6 +865,37 @@ class PopupManager {
     }
   }
 
+  exportThreadsToTXT() {
+    if (this.threadQueue.length === 0) {
+      this.showError("No threads to export");
+      return;
+    }
+
+    // Prepare the text content
+    let textContent = `Threads Export - ${new Date().toLocaleString()}\n`;
+    textContent += `Total Threads: ${this.threadQueue.length}\n`;
+    textContent += "=".repeat(50) + "\n\n";
+
+    this.threadQueue.forEach((thread, index) => {
+      textContent += `Thread ${index + 1}:\n`;
+      textContent += "-".repeat(30) + "\n";
+      textContent += thread.text + "\n\n";
+    });
+
+    // Create blob and download
+    const blob = new Blob([textContent], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `threads_export_${Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    this.showSuccess("Threads exported successfully!");
+  }
+
   async checkPostingStatus() {
     try {
       const status = await Messages.send("getPostingStatus");
@@ -904,8 +957,12 @@ class PopupManager {
   async saveSettings() {
     const settings = {
       threadCount: parseInt(document.getElementById("threadCount").value),
-      minDelay: parseInt(document.getElementById("minDelay").value),
-      maxDelay: parseInt(document.getElementById("maxDelay").value),
+      minDelay: Math.round(
+        parseFloat(document.getElementById("minDelay").value) * 60
+      ), // Store as seconds
+      maxDelay: Math.round(
+        parseFloat(document.getElementById("maxDelay").value) * 60
+      ), // Store as seconds
       excludeLinks: document.getElementById("excludeLinks").checked,
       randomOrder: document.getElementById("randomOrder").checked,
     };
@@ -932,10 +989,11 @@ class PopupManager {
       );
 
       document.getElementById("threadCount").value = threadCount;
+      // Convert stored seconds back to minutes for display
       document.getElementById("minDelay").value =
-        settings.minDelay || CONFIG.EXTENSION.DEFAULT_MIN_DELAY;
+        (settings.minDelay || CONFIG.EXTENSION.DEFAULT_MIN_DELAY) / 60;
       document.getElementById("maxDelay").value =
-        settings.maxDelay || CONFIG.EXTENSION.DEFAULT_MAX_DELAY;
+        (settings.maxDelay || CONFIG.EXTENSION.DEFAULT_MAX_DELAY) / 60;
       document.getElementById("excludeLinks").checked =
         settings.excludeLinks !== false;
       document.getElementById("randomOrder").checked =
@@ -963,8 +1021,36 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Handle messages from background script
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "postingProgress") {
-      // Real-time progress update
-      popup.updateProgress();
+      // Update all the UI elements directly when we get progress updates
+      if (message.progress) {
+        document.getElementById("postedCount").textContent =
+          message.progress.posted;
+        document.getElementById("remainingCount").textContent =
+          message.progress.remaining;
+
+        const progress =
+          (message.progress.posted / message.progress.total) * 100;
+        document.getElementById("progressBar").style.width = `${progress}%`;
+
+        if (message.progress.message) {
+          document.getElementById("currentStatus").textContent =
+            message.progress.message;
+        }
+
+        // Update countdown
+        if (
+          message.progress.nextPostIn !== undefined &&
+          message.progress.nextPostIn > 0
+        ) {
+          const minutes = Math.floor(message.progress.nextPostIn / 60);
+          const seconds = message.progress.nextPostIn % 60;
+          document.getElementById("nextPostTime").textContent = `${minutes
+            .toString()
+            .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+        } else {
+          document.getElementById("nextPostTime").textContent = "00:00";
+        }
+      }
     } else if (message.action === "postingComplete") {
       // Posting finished
       popup.onPostingComplete(message.status);
@@ -977,7 +1063,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 // Add this to popup.js temporarily for debugging:
-
 async function debugLicense() {
   console.log("=== LICENSE DEBUG ===");
 

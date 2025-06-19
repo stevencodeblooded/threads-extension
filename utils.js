@@ -59,21 +59,23 @@ const CONFIG = {
   // Detection Bypass Settings
   ANTI_DETECTION: {
     TYPING: {
-      MIN_CHAR_DELAY: 50, // ms
-      MAX_CHAR_DELAY: 150, // ms
-      PARAGRAPH_PAUSE: 500, // ms
-      MISTAKE_PROBABILITY: 0.02, // 2% chance of typo
+      MIN_CHAR_DELAY: 80, // Increased from 50ms
+      MAX_CHAR_DELAY: 200, // Increased from 150ms
+      PARAGRAPH_PAUSE: 800, // Increased from 500ms
+      MISTAKE_PROBABILITY: 0.03, // Slightly increased from 0.02
+      WORD_PAUSE_MIN: 100, // New: pause between words
+      WORD_PAUSE_MAX: 300, // New: pause between words
     },
     SCROLLING: {
-      MIN_SCROLL_SPEED: 100, // pixels
-      MAX_SCROLL_SPEED: 300, // pixels
-      SCROLL_PAUSE_MIN: 200, // ms
-      SCROLL_PAUSE_MAX: 800, // ms
+      MIN_SCROLL_SPEED: 100,
+      MAX_SCROLL_SPEED: 300,
+      SCROLL_PAUSE_MIN: 200,
+      SCROLL_PAUSE_MAX: 800,
     },
     MOUSE: {
-      MOVEMENT_PROBABILITY: 0.3, // 30% chance of mouse movement
-      MIN_MOVEMENT: 50, // pixels
-      MAX_MOVEMENT: 200, // pixels
+      MOVEMENT_PROBABILITY: 0.3,
+      MIN_MOVEMENT: 50,
+      MAX_MOVEMENT: 200,
     },
   },
 

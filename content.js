@@ -26,6 +26,15 @@ const CONFIG = {
   }
 };
 
+// Comprehensive list of UI elements to filter out
+const UI_ELEMENTS_TO_FILTER = [
+  "Traducir", "Translate", "View translation", "Ver traducción",
+  "See translation", "Show translation", "Ver más", "See more",
+  "Show more", "Mostrar más", "Load more", "Cargar más",
+  "Reply", "Responder", "Like", "Me gusta", "Share", "Compartir",
+  "Follow", "Seguir", "Following", "Siguiendo"
+];
+
 // Selectors based on the provided document
 const THREAD_CONTAINER_SELECTOR =
   ".x1a6qonq.x6ikm8r.x10wlt62.xj0a0fe.x126k92a.x6prxxf.x7r5mf7";
@@ -100,6 +109,8 @@ async function extractThreads(
     const threads = [];
     let scrollAttempts = 0;
     let lastHeight = document.documentElement.scrollHeight;
+    let noNewContentCount = 0; // Track consecutive attempts with no new content
+    const MAX_NO_CONTENT_ATTEMPTS = 3; // Stop after 3 consecutive attempts with no new content
 
     log(`Starting extraction of ${count} threads`, "info");
 
@@ -153,6 +164,35 @@ async function extractThreads(
         break;
       }
 
+      // Check if we're at the end of available content
+      const currentHeight = document.documentElement.scrollHeight;
+      
+      if (currentHeight === lastHeight) {
+        noNewContentCount++;
+        log(
+          `No new content loaded. Attempt ${noNewContentCount}/${MAX_NO_CONTENT_ATTEMPTS}`,
+          "warn"
+        );
+        
+        if (noNewContentCount >= MAX_NO_CONTENT_ATTEMPTS) {
+          log(
+            `Reached end of available content. Extracted ${threads.length} threads out of requested ${count}`,
+            "warn"
+          );
+          break;
+        }
+        
+        // Try scrolling up a bit then down again
+        window.scrollTo({
+          top: window.scrollY - 500,
+          behavior: "smooth",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } else {
+        noNewContentCount = 0; // Reset counter when new content loads
+        lastHeight = currentHeight;
+      }
+
       // Scroll to load more threads
       log(
         `Need more threads. Current: ${threads.length}, Target: ${count}. Scrolling...`,
@@ -167,33 +207,8 @@ async function extractThreads(
 
       // Wait for new content to load
       await new Promise((resolve) => setTimeout(resolve, SCROLL_WAIT_TIME));
-
-      // Check if new content was loaded
-      const currentHeight = document.documentElement.scrollHeight;
-      if (currentHeight === lastHeight) {
-        scrollAttempts++;
-        log(
-          `No new content loaded. Attempt ${scrollAttempts}/${MAX_SCROLL_ATTEMPTS}`,
-          "warn"
-        );
-
-        // Try scrolling up a bit then down again
-        if (scrollAttempts % 3 === 0) {
-          window.scrollTo({
-            top: window.scrollY - 500,
-            behavior: "smooth",
-          });
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          window.scrollTo({
-            top: document.documentElement.scrollHeight,
-            behavior: "smooth",
-          });
-          await new Promise((resolve) => setTimeout(resolve, SCROLL_WAIT_TIME));
-        }
-      } else {
-        scrollAttempts = 0; // Reset attempts on successful load
-        lastHeight = currentHeight;
-      }
+      
+      scrollAttempts++;
     }
 
     // Clear processed IDs for next extraction
@@ -223,22 +238,29 @@ function extractThreadContent(threadElement) {
     const paragraphElements = Array.from(
       threadElement.querySelectorAll('div[dir="auto"]')
     ).filter((el) => {
-      // Filter out UI elements like "Traducir" button by checking for common UI classes
+      // Get the text content to check
+      const text = el.textContent.trim();
+
+      // Filter out common UI elements
       const isUiElement =
         el.classList.contains("x1q0g3np") || // Common UI class
         el.closest('[role="button"]') || // Is or is inside a button
         el.getAttribute("data-lexical-text") === "true" || // Lexical editor UI element
-        el.textContent.trim() === "Traducir"; // Explicitly filter out "Traducir"
+        UI_ELEMENTS_TO_FILTER.includes(text) || // Check against comprehensive filter list
+        text.length < 2 || // Too short to be real content
+        el.querySelector('[role="button"]') || // Contains a button
+        el.closest('[aria-label*="Translate"]') || // Translation-related elements
+        el.closest('[aria-label*="Traducir"]'); // Spanish translation elements
 
-      return !isUiElement;
+      return !isUiElement && text.length > 0;
     });
 
     if (paragraphElements.length > 0) {
       // If we find paragraph elements, extract text from each one
       paragraphElements.forEach((para) => {
         const text = para.textContent.trim();
-        if (text) {
-          // Check if this paragraph contains emojis or other special content
+        if (text && text !== "Traducir" && text !== "Translate") {
+          // Double-check the text is not a UI element
           const hasSpecialContent =
             para.querySelector("img") ||
             para.querySelector("span[aria-label]") ||
@@ -268,9 +290,14 @@ function extractThreadContent(threadElement) {
     } else {
       // Fallback to using innerText which should preserve line breaks
       const rawText = threadElement.innerText;
-      const lines = rawText
-        .split(/\r?\n/)
-        .filter((line) => line.trim() && line.trim() !== "Traducir");
+      const lines = rawText.split(/\r?\n/).filter((line) => {
+        const trimmed = line.trim();
+        return (
+          trimmed &&
+          !UI_ELEMENTS_TO_FILTER.includes(trimmed) &&
+          trimmed.length > 1
+        );
+      });
 
       lines.forEach((line) => {
         paragraphs.push({
@@ -886,16 +913,20 @@ async function postThread(threadObj) {
     }
 
     // APPROACH #1: Simulate keyboard events for each paragraph and press Enter between them
+    // APPROACH #1: Simulate human-like typing with proper delays
     try {
-      // We'll simulate typing by dispatching keyboard events
+      // Focus the text area
+      textArea.focus();
+
       for (let i = 0; i < paragraphs.length; i++) {
         const paragraph = paragraphs[i];
 
-        // For paragraphs after the first one, insert a line break first
+        // Add line breaks between paragraphs
         if (i > 0) {
-          // Add extra spacing between certain paragraphs for better visual separation
-          // Simulate pressing Enter key twice for better spacing
-          const enterKeyEvent = new KeyboardEvent("keydown", {
+          // Simulate pressing Enter twice for paragraph spacing
+          await new Promise((resolve) => setTimeout(resolve, 300));
+
+          const enterEvent = new KeyboardEvent("keydown", {
             key: "Enter",
             code: "Enter",
             keyCode: 13,
@@ -903,58 +934,67 @@ async function postThread(threadObj) {
             bubbles: true,
             cancelable: true,
           });
-          textArea.dispatchEvent(enterKeyEvent);
 
-          // Ensure the key press is processed
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          textArea.dispatchEvent(enterEvent);
+          await new Promise((resolve) => setTimeout(resolve, 200));
 
-          // Insert another Enter press if needed for more spacing (especially before "Then, let's be friends")
+          // Add extra Enter for more spacing if needed
           if (
-            paragraph.text.startsWith("Then,") ||
+            paragraph.text?.startsWith("Then,") ||
             i === paragraphs.length - 2
           ) {
-            // Extra space before the last real paragraph
-            textArea.dispatchEvent(enterKeyEvent);
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            textArea.dispatchEvent(enterEvent);
+            await new Promise((resolve) => setTimeout(resolve, 200));
           }
         }
 
-        // Type the paragraph text
+        // Type each character with human-like delays
         const paragraphText = paragraph.text || paragraph;
 
-        // If the paragraph has special content (emojis etc.), try to preserve it
-        if (paragraph.hasSpecialContent && paragraph.originalHTML) {
-          try {
-            // Create a temporary div
-            const tempDiv = document.createElement("div");
-            tempDiv.innerHTML = paragraph.originalHTML;
+        for (let j = 0; j < paragraphText.length; j++) {
+          const char = paragraphText[j];
 
-            // Try to paste it as rich content
-            const selection = window.getSelection();
-            const range = document.createRange();
-            range.selectNodeContents(textArea);
-            selection.removeAllRanges();
-            selection.addRange(range);
+          // Insert the character
+          document.execCommand("insertText", false, char);
 
-            document.execCommand("insertHTML", false, paragraph.originalHTML);
-            log("Inserted paragraph with preserved special content", "info");
-          } catch (e) {
-            // Fall back to plain text if HTML insertion fails
-            document.execCommand("insertText", false, paragraphText);
-            log("Used plain text fallback for special content", "warn");
+          // Variable typing delay
+          let delay = Math.random() * (200 - 80) + 80; // 80-200ms per character
+
+          // Longer pause after punctuation
+          if ([".", "!", "?", ",", ";", ":"].includes(char)) {
+            delay += Math.random() * 300 + 200; // Additional 200-500ms
           }
-        } else {
-          // Regular text paragraph
-          document.execCommand("insertText", false, paragraphText);
+
+          // Pause after spaces (between words)
+          if (char === " ") {
+            delay += Math.random() * 150 + 50; // Additional 50-200ms
+          }
+
+          // Occasionally make a "typo" and correct it
+          if (Math.random() < 0.02 && j > 0 && j < paragraphText.length - 1) {
+            // Make a typo
+            const wrongChar = String.fromCharCode(char.charCodeAt(0) + 1);
+            document.execCommand("insertText", false, wrongChar);
+            await new Promise((resolve) => setTimeout(resolve, 150));
+
+            // Delete the typo
+            document.execCommand("delete");
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            // Type correct character
+            document.execCommand("insertText", false, char);
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
 
-        // Wait a moment to ensure the text is processed
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // Pause between paragraphs
+        await new Promise((resolve) => setTimeout(resolve, 800));
       }
 
-      log("Completed manual typing simulation with Enter key presses", "info");
+      log("Completed human-like typing simulation", "info");
     } catch (e) {
-      log(`Error in keyboard simulation approach: ${e.message}`, "warn");
+      log(`Error in typing simulation: ${e.message}`, "warn");
 
       // APPROACH #2: If that fails, try the direct HTML approach again but with specific Threads.net formatting
       try {

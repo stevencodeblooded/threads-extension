@@ -21,6 +21,7 @@ class BackgroundService {
     };
 
     this.postingTimer = null;
+    this.countdownInterval = null;
     this.licenseCheckAlarm = "license-check";
   }
 
@@ -29,6 +30,9 @@ class BackgroundService {
 
     // Initialize license manager first
     await licenseManager.init();
+
+    // Clean up any old alarms
+    await this.cleanupOldAlarms();
 
     // Set up message listeners
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -119,6 +123,64 @@ class BackgroundService {
       if (!isValid && this.postingState.isActive) {
         // Stop posting if license is invalid
         this.stopPosting(() => {});
+      }
+    } else if (alarm.name.startsWith("post-thread-")) {
+      // Handle thread posting alarm
+      const alarmData = await Storage.get(`alarm-${alarm.name}`);
+
+      if (
+        alarmData &&
+        alarmData.action === "postThread" &&
+        this.postingState.isActive &&
+        !this.postingState.stopped
+      ) {
+        // Stop countdown updates
+        this.stopCountdownUpdates();
+
+        // Update status to show we're posting
+        this.postingState.message = "Posting thread...";
+        this.sendProgressUpdate();
+
+        try {
+          // Focus the Threads tab before posting
+          await chrome.tabs.update(this.postingState.tabId, { active: true });
+
+          // Small delay to ensure tab is focused
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          const response = await this.sendToContentScript(
+            this.postingState.tabId,
+            "postSingleThread",
+            { thread: alarmData.thread }
+          );
+
+          if (response && response.success) {
+            this.postingState.posted++;
+            this.postingState.postedThreadIds.push(alarmData.thread.id);
+            Logger.log(
+              `Posted thread ${this.postingState.posted}/${this.postingState.threads.length}`
+            );
+          } else {
+            this.postingState.failed++;
+            Logger.error(
+              "Failed to post thread:",
+              response?.error || "Unknown error"
+            );
+          }
+        } catch (error) {
+          this.postingState.failed++;
+          Logger.error("Error posting thread:", error);
+        }
+
+        // Clean up alarm data
+        await Storage.remove(`alarm-${alarm.name}`);
+
+        // Move to next thread
+        this.postingState.currentIndex++;
+        await this.saveState();
+
+        // Process next thread
+        this.processNextThread();
       }
     }
   }
@@ -216,51 +278,87 @@ class BackgroundService {
 
     this.postingState.nextPostTime = Date.now() + delay;
 
-    // Update progress
-    this.sendProgressUpdate();
+    Logger.log(
+      `Waiting ${delay / 1000} seconds before posting thread ${
+        this.postingState.currentIndex + 1
+      }`
+    );
 
-    // Log the delay for first thread
-    if (this.postingState.currentIndex === 0) {
-      Logger.log(`Waiting ${delay / 1000} seconds before posting first thread`);
-    }
+    // Start countdown updates
+    this.startCountdownUpdates();
 
-    // Wait for delay
-    this.postingTimer = setTimeout(async () => {
-      try {
-        const response = await this.sendToContentScript(
-          this.postingState.tabId,
-          "postSingleThread",
-          { thread: currentThread }
-        );
+    // Create an alarm instead of setTimeout to handle background execution
+    const alarmName = `post-thread-${Date.now()}`;
 
-        if (response && response.success) {
-          this.postingState.posted++;
-          this.postingState.postedThreadIds.push(currentThread.id);
-          Logger.log(
-            `Posted thread ${this.postingState.posted}/${this.postingState.threads.length}`
-          );
-        } else {
-          this.postingState.failed++;
-          Logger.error(
-            "Failed to post thread:",
-            response?.error || "Unknown error"
-          );
-        }
-      } catch (error) {
-        this.postingState.failed++;
-        Logger.error("Error posting thread:", error);
-      }
+    // Store the current posting state with alarm name
+    this.postingState.currentAlarm = alarmName;
+    await this.saveState();
 
-      // Move to next thread
-      this.postingState.currentIndex++;
-      await this.saveState();
+    // Create alarm that will fire after delay
+    chrome.alarms.create(alarmName, {
+      when: Date.now() + delay,
+    });
 
-      // Process next thread
-      this.processNextThread();
-    }, delay);
+    // Store alarm handler data
+    await Storage.set(`alarm-${alarmName}`, {
+      action: "postThread",
+      thread: currentThread,
+      index: this.postingState.currentIndex,
+    });
   }
 
-  stopPosting(sendResponse) {
+  // Add these new functions after processNextThread
+  startCountdownUpdates() {
+    // Clear any existing countdown interval
+    this.stopCountdownUpdates();
+
+    // Update countdown every second
+    this.countdownInterval = setInterval(() => {
+      const now = Date.now();
+      const timeLeft = Math.max(0, this.postingState.nextPostTime - now);
+
+      // Send update with countdown
+      this.sendCountdownUpdate(Math.floor(timeLeft / 1000));
+
+      if (timeLeft <= 0) {
+        this.stopCountdownUpdates();
+      }
+    }, 1000);
+
+    // Send initial update
+    const initialTimeLeft = Math.max(
+      0,
+      this.postingState.nextPostTime - Date.now()
+    );
+    this.sendCountdownUpdate(Math.floor(initialTimeLeft / 1000));
+  }
+
+  stopCountdownUpdates() {
+    if (this.countdownInterval) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+  }
+
+  sendCountdownUpdate(secondsLeft) {
+    // Send specific countdown update
+    chrome.runtime.sendMessage({
+      action: "postingProgress",
+      progress: {
+        posted: this.postingState.posted,
+        remaining:
+          this.postingState.threads.length - this.postingState.currentIndex,
+        total: this.postingState.threads.length,
+        nextPostIn: secondsLeft,
+        message:
+          secondsLeft > 0
+            ? `Waiting to post next thread...`
+            : "Preparing to post...",
+      },
+    });
+  }
+
+  async stopPosting(sendResponse) {
     Logger.log("Stopping posting process");
 
     if (!this.postingState.isActive) {
@@ -277,8 +375,17 @@ class BackgroundService {
       this.postingTimer = null;
     }
 
+    // Clear any pending alarms
+    if (this.postingState.currentAlarm) {
+      await chrome.alarms.clear(this.postingState.currentAlarm);
+      await Storage.remove(`alarm-${this.postingState.currentAlarm}`);
+    }
+
+    // Stop countdown updates
+    this.stopCountdownUpdates();
+
     // Send stop signal to content script
-    this.sendToContentScript(this.postingState.tabId, "stop", {});
+    this.sendToContentScript(this.postingState.tabId, "stopReposting", {});
 
     sendResponse({ success: true });
 
@@ -309,7 +416,8 @@ class BackgroundService {
         this.postingState.threads.length - this.postingState.currentIndex,
       total: this.postingState.threads.length,
       nextPostIn,
-      message: this.getStatusMessage(),
+      message:
+        nextPostIn > 0 ? "Waiting to post next thread..." : "Posting thread...",
       complete: false,
     });
   }
@@ -444,6 +552,17 @@ class BackgroundService {
         // Tab no longer exists
         Logger.warn("Previous posting tab no longer exists");
         await this.clearState();
+      }
+    }
+  }
+
+  async cleanupOldAlarms() {
+    // Clean up any old posting alarms
+    const alarms = await chrome.alarms.getAll();
+    for (const alarm of alarms) {
+      if (alarm.name.startsWith("post-thread-")) {
+        await chrome.alarms.clear(alarm.name);
+        await Storage.remove(`alarm-${alarm.name}`);
       }
     }
   }
