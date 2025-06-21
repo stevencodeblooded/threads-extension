@@ -8,57 +8,31 @@ class PopupManager {
     this.currentTab = null;
     this.progressInterval = null;
     this.countdownInterval = null;
+    this.isExtracting = false;
+    this.extractionAborted = false;
   }
 
   async init() {
     Logger.log("Initializing popup");
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Get current active tab
+    const tabs = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    this.currentTab = tabs[0];
+    Logger.log(`Current tab: ${this.currentTab?.url}`);
 
-    const currentWindow = await chrome.windows.getCurrent();
-    const isDetached =
-      currentWindow.type === "popup" &&
-      currentWindow.id !== chrome.windows.WINDOW_ID_CURRENT;
+    // Check if we're on Threads
+    const isOnThreads =
+      this.currentTab.url.includes("threads.com") ||
+      this.currentTab.url.includes("threads.net");
 
-    Logger.log(
-      `Window type: ${currentWindow.type}, Is detached: ${isDetached}`
-    );
-
-    if (isDetached) {
-      Logger.log("Running in detached window mode");
-
-      let retries = 3;
-      let response = null;
-
-      while (retries > 0 && (!response || !response.tab)) {
-        response = await Messages.send("getThreadsTab");
-        Logger.log("getThreadsTab response:", response);
-
-        if (!response || !response.tab) {
-          Logger.log(`No tab found, retrying... (${retries} retries left)`);
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          retries--;
-        }
-      }
-
-      this.currentTab = response?.tab || null;
-
-      if (!this.currentTab) {
-        this.showError(
-          "No Threads tab found. Please open any Threads.com page to start extracting."
-        );
-        this.currentTab = { url: "" };
-      } else {
-        Logger.log(`Found Threads tab: ${this.currentTab.url}`);
-        this.showSuccess("Threads tab detected! Ready to extract.");
-      }
+    if (!isOnThreads) {
+      this.showError("Please navigate to Threads.com to use this extension");
     } else {
-      const tabs = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      this.currentTab = tabs[0];
-      Logger.log(`Popup mode - current tab: ${this.currentTab?.url}`);
+      // NEW: Auto-refresh logic
+      await this.autoRefreshIfNeeded();
     }
 
     const isLicensed = await licenseManager.init();
@@ -73,47 +47,116 @@ class PopupManager {
     await this.restoreState();
 
     await this.checkPostingStatus();
-
-    if (isDetached) {
-      this.setupThreadsTabMonitoring();
-    }
   }
 
-  setupThreadsTabMonitoring() {
-    // Monitor for tab changes
-    setInterval(async () => {
-      const response = await Messages.send("getThreadsTab");
-      const newTab = response.tab;
+  // method to handle auto-refresh
+  async autoRefreshIfNeeded() {
+    try {
+      // Check if we're currently posting
+      const postingStatus = await Messages.send("getPostingStatus");
 
-      if (!newTab && this.currentTab && this.currentTab.url) {
-        // Tab was closed, just update status
-        this.showError(
-          "Threads tab was closed. Please open any Threads.com page to continue."
-        );
-        this.currentTab = { url: "" }; // Dummy tab to prevent errors
+      if (postingStatus && postingStatus.isPosting) {
+        Logger.log("Currently posting - skipping auto-refresh");
         return;
       }
 
-      if (newTab && (!this.currentTab || !this.currentTab.url)) {
-        // New tab opened, clear error
-        this.showSuccess("Threads tab detected! You can now extract threads.");
-        this.currentTab = newTab;
+      // Check if we're on a profile page or main feed
+      const isProfilePage =
+        this.currentTab.url.includes("/@") ||
+        this.currentTab.url.match(/threads\.(com|net)\/[^\/]+$/);
+
+      // Get last refresh timestamp from storage
+      const lastRefreshKey = `lastRefresh_${this.currentTab.id}`;
+      const lastRefreshData = await Storage.get(lastRefreshKey);
+      const now = Date.now();
+
+      // Only refresh if:
+      // 1. We haven't refreshed this tab recently (within 5 seconds)
+      // 2. We're on a profile or main page
+      // 3. Not currently posting
+      const shouldRefresh =
+        !lastRefreshData || now - lastRefreshData.timestamp > 5000;
+
+      if (
+        shouldRefresh &&
+        (isProfilePage || this.currentTab.url.match(/threads\.(com|net)\/?$/))
+      ) {
+        Logger.log("Auto-refreshing Threads page");
+
+        // Store refresh timestamp
+        await Storage.set(lastRefreshKey, { timestamp: now });
+
+        // Refresh the tab
+        await chrome.tabs.reload(this.currentTab.id);
+
+        // Wait a bit for the page to start loading
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Wait for the page to be fully loaded
+        await this.waitForTabToLoad(this.currentTab.id);
+
+        // Re-inject content script if needed
+        await this.ensureContentScriptInjected();
+
+        this.showSuccess("Page refreshed and ready!");
       }
+    } catch (error) {
+      Logger.warn("Auto-refresh failed:", error);
+      // Don't show error to user - fail silently
+    }
+  }
 
-      // Update current tab if it changed
-      if (newTab && this.currentTab && this.currentTab.id !== newTab.id) {
-        Logger.log("Threads tab changed, updating reference");
-        this.currentTab = newTab;
+  // method to wait for tab to load
+  async waitForTabToLoad(tabId, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+      const startTime = Date.now();
 
-        // Test if content script is ready (but don't inject automatically)
+      const checkTabStatus = async () => {
         try {
-          await Messages.sendToTab(newTab.id, "ping", {});
+          const tab = await chrome.tabs.get(tabId);
+
+          if (tab.status === "complete") {
+            resolve(tab);
+            return;
+          }
+
+          if (Date.now() - startTime > timeout) {
+            reject(new Error("Tab load timeout"));
+            return;
+          }
+
+          // Check again in 100ms
+          setTimeout(checkTabStatus, 100);
         } catch (error) {
-          Logger.log("Content script not ready on new tab");
-          // Don't auto-inject, let the user refresh if needed
+          reject(error);
         }
+      };
+
+      checkTabStatus();
+    });
+  }
+
+  // Helper method to ensure content script is injected
+  async ensureContentScriptInjected() {
+    try {
+      // Try to ping the content script
+      await Messages.sendToTab(this.currentTab.id, "ping", {});
+    } catch (error) {
+      // Content script not responding, inject it
+      Logger.log("Re-injecting content script after refresh");
+
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: this.currentTab.id },
+          files: ["content.js"],
+        });
+
+        // Wait for script to initialize
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } catch (injectError) {
+        Logger.error("Failed to inject content script:", injectError);
       }
-    }, 2000); // Check every 2 seconds
+    }
   }
 
   setupEventListeners() {
@@ -134,6 +177,10 @@ class PopupManager {
         );
       }
     });
+    // Stop extraction
+    document
+      .getElementById("stopExtraction")
+      .addEventListener("click", () => this.stopExtraction());
     // License activation
     document
       .getElementById("activateLicense")
@@ -352,27 +399,17 @@ class PopupManager {
     const btnText = button.querySelector(".btn-text");
 
     // Show loading state
+    this.isExtracting = true;
+    this.extractionAborted = false;
     button.disabled = true;
     spinner.style.display = "block";
     btnText.textContent = "Extracting...";
+    document.getElementById("stopExtraction").style.display = "block";
 
     try {
       // Get license status to check limits
       const licenseStatus = licenseManager.getStatus();
       const maxThreadsAllowed = licenseStatus.features?.maxThreads || 20; // Default to trial limit
-
-      // In detached mode, always get fresh tab reference
-      const currentWindow = await chrome.windows.getCurrent();
-      const isDetached = currentWindow.type === "popup";
-
-      if (isDetached) {
-        const response = await Messages.send("getThreadsTab");
-        this.currentTab = response.tab;
-
-        if (!this.currentTab) {
-          throw new Error("Threads tab not found. Please open Threads.com");
-        }
-      }
 
       // Check if we're on the correct site
       if (
@@ -400,13 +437,6 @@ class PopupManager {
         `Extracting ${count} threads from ${this.currentTab.url} (License limit: ${maxThreadsAllowed})`,
         "info"
       );
-
-      // Focus the Threads tab before extraction
-      if (isDetached) {
-        await chrome.tabs.update(this.currentTab.id, { active: true });
-        // Small delay to ensure tab is focused
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
 
       // Send message to content script
       let response;
@@ -504,10 +534,37 @@ class PopupManager {
 
       this.showError(errorMessage);
     } finally {
+      this.isExtracting = false;
       button.disabled = false;
       spinner.style.display = "none";
       btnText.textContent = "Extract Threads";
+      document.getElementById("stopExtraction").style.display = "none";
     }
+  }
+
+  async stopExtraction() {
+    this.extractionAborted = true;
+    this.isExtracting = false;
+
+    // Send stop signal to content script
+    try {
+      await Messages.sendToTab(this.currentTab.id, "stopExtraction", {});
+    } catch (error) {
+      Logger.warn("Failed to send stop signal to content script", error);
+    }
+
+    // Update UI
+    const extractBtn = document.getElementById("extractThreads");
+    const stopBtn = document.getElementById("stopExtraction");
+    const spinner = extractBtn.querySelector(".spinner");
+    const btnText = extractBtn.querySelector(".btn-text");
+
+    extractBtn.disabled = false;
+    stopBtn.style.display = "none";
+    spinner.style.display = "none";
+    btnText.textContent = "Extract Threads";
+
+    this.showError("Extraction stopped by user");
   }
 
   updateThreadCountLimit() {
@@ -544,27 +601,64 @@ class PopupManager {
       return;
     }
 
-    // Split by double newlines (two enters) to get paragraphs
-    // But preserve the original text structure
-    const paragraphs = text.split(/\n\n+/).filter((p) => p.trim());
+    // NEW: Check for a special delimiter to split into multiple posts
+    // For example, use "---" on its own line to indicate separate posts
+    const THREAD_SEPARATOR = /^---$/m;
 
-    // Create thread object with proper paragraph structure
-    const threadData = {
-      text: text, // Keep the original text with all line breaks
-      paragraphs: paragraphs.map((p) => ({
-        text: p.trim(),
-        hasSpecialContent: /[^\x00-\x7F]/.test(p),
-      })),
-    };
+    if (THREAD_SEPARATOR.test(text)) {
+      // User wants to create multiple separate posts
+      const posts = text.split(THREAD_SEPARATOR).filter((p) => p.trim());
 
-    // Add to queue with the full thread data
-    this.addThreadToQueue(threadData);
+      Logger.log(`Creating ${posts.length} separate posts using --- separator`);
+
+      posts.forEach((postText, index) => {
+        // Keep all the formatting within each post intact
+        const threadData = {
+          text: postText.trim(),
+          paragraphs: this.parseThreadParagraphs(postText.trim()),
+          isPartOfSet: true,
+          setIndex: index + 1,
+          setTotal: posts.length,
+        };
+
+        this.addThreadToQueue(threadData);
+      });
+
+      this.showSuccess(`Added ${posts.length} threads to queue!`);
+    } else {
+      // Single post that preserves all paragraph formatting
+      const threadData = {
+        text: text,
+        paragraphs: this.parseThreadParagraphs(text),
+      };
+
+      this.addThreadToQueue(threadData);
+      this.showSuccess("Thread added to queue!");
+    }
 
     // Clear composer
     composer.value = "";
     this.updateCharCount(composer);
+  }
 
-    this.showSuccess("Thread added to queue!");
+  // NEW: Helper function to parse paragraphs while preserving structure
+  parseThreadParagraphs(text) {
+    // We want to preserve the exact formatting the user entered
+    // Only split into separate paragraphs on double (or more) line breaks
+    const paragraphs = text
+      .split(/\n\n+/)
+      .map((paragraph) => {
+        // Each paragraph may contain single line breaks that should be preserved
+        return {
+          text: paragraph.trim(),
+          hasSpecialContent: /[^\x00-\x7F]/.test(paragraph),
+          // Store whether this paragraph has internal line breaks
+          hasLineBreaks: paragraph.includes("\n"),
+        };
+      })
+      .filter((p) => p.text); // Remove empty paragraphs
+
+    return paragraphs;
   }
 
   addThreadToQueue(thread) {
@@ -901,6 +995,9 @@ class PopupManager {
       const status = await Messages.send("getPostingStatus");
 
       if (status && status.isPosting) {
+        // Store posting status to prevent refresh
+        await Storage.set("isCurrentlyPosting", true);
+
         // Posting is in progress
         this.isPosting = true;
 
@@ -914,6 +1011,8 @@ class PopupManager {
 
         // Start progress tracking
         this.startProgressTracking();
+      } else {
+        await Storage.set("isCurrentlyPosting", false);
       }
     } catch (error) {
       Logger.warn("Failed to check posting status", error);

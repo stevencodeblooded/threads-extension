@@ -78,15 +78,18 @@
           <span class="btn-text">Extract Threads</span>
           <div class="spinner" style="display: none"></div>
         </button>
+        <button id="stopExtraction" class="danger-btn" style="display: none">
+          Stop Extraction
+        </button>
       </div>
 
       <!-- Write Mode Section -->
       <div id="writeSection" class="mode-section" style="display: none">
         <div class="thread-composer">
           <textarea
-            id="threadComposer"
-            placeholder="Write your thread here...&#10;&#10;Press Enter twice for new paragraph"
-          ></textarea>
+          id="threadComposer"
+          placeholder="Write your thread here...&#10;&#10;• Press Enter once for a new line&#10;• Press Enter twice for a new paragraph&#10;• Use --- on its own line to create separate posts"
+        ></textarea>
           <div class="composer-footer">
             <span id="charCount">0 characters</span>
             <button id="addToQueue">Add to Queue</button>

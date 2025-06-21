@@ -37,6 +37,7 @@
     }
   ],
   "action": {
+    "default_popup": "popup.html",
     "default_title": "Threads Pro Bot",
     "default_icon": {
       "16": "assets/icon.png",

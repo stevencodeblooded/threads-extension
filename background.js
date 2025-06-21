@@ -25,6 +25,34 @@ class BackgroundService {
     this.licenseCheckAlarm = "license-check";
   }
 
+  async ensureContentScriptInjected(tabId) {
+    try {
+      // Try to ping the content script
+      const response = await this.sendToContentScript(tabId, "ping", {});
+      if (response && response.success) {
+        return true;
+      }
+    } catch (error) {
+      // Content script not loaded, inject it
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tabId },
+          files: ["content.js"],
+        });
+
+        // Wait for script to initialize
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Verify it's loaded
+        const pingResponse = await this.sendToContentScript(tabId, "ping", {});
+        return pingResponse && pingResponse.success;
+      } catch (injectError) {
+        Logger.error("Failed to inject content script:", injectError);
+        return false;
+      }
+    }
+  }
+
   async init() {
     Logger.log("Background service initialized");
 
@@ -141,35 +169,60 @@ class BackgroundService {
         this.postingState.message = "Posting thread...";
         this.sendProgressUpdate();
 
-        try {
-          // Focus the Threads tab before posting
-          await chrome.tabs.update(this.postingState.tabId, { active: true });
+        let retries = 3;
+        let posted = false;
 
-          // Small delay to ensure tab is focused
-          await new Promise((resolve) => setTimeout(resolve, 500));
+        while (retries > 0 && !posted) {
+          try {
+            // Check if tab still exists
+            try {
+              await chrome.tabs.get(this.postingState.tabId);
+            } catch (tabError) {
+              Logger.error("Tab no longer exists, stopping posting");
+              this.stopPosting(() => {});
+              return;
+            }
 
-          const response = await this.sendToContentScript(
-            this.postingState.tabId,
-            "postSingleThread",
-            { thread: alarmData.thread }
-          );
-
-          if (response && response.success) {
-            this.postingState.posted++;
-            this.postingState.postedThreadIds.push(alarmData.thread.id);
-            Logger.log(
-              `Posted thread ${this.postingState.posted}/${this.postingState.threads.length}`
+            // Ensure content script is injected
+            const scriptReady = await this.ensureContentScriptInjected(
+              this.postingState.tabId
             );
-          } else {
-            this.postingState.failed++;
+            if (!scriptReady) {
+              throw new Error("Content script not available");
+            }
+
+            // Don't focus tab if minimized - just send the command
+            const response = await this.sendToContentScript(
+              this.postingState.tabId,
+              "postSingleThread",
+              { thread: alarmData.thread }
+            );
+
+            if (response && response.success) {
+              this.postingState.posted++;
+              this.postingState.postedThreadIds.push(alarmData.thread.id);
+              Logger.log(
+                `Posted thread ${this.postingState.posted}/${this.postingState.threads.length}`
+              );
+              posted = true;
+            } else {
+              throw new Error(response?.error || "Unknown error");
+            }
+          } catch (error) {
+            retries--;
             Logger.error(
-              "Failed to post thread:",
-              response?.error || "Unknown error"
+              `Failed to post thread (${3 - retries}/3 attempts):`,
+              error.message
             );
+
+            if (retries > 0) {
+              // Wait before retry
+              await new Promise((resolve) => setTimeout(resolve, 5000));
+            } else {
+              this.postingState.failed++;
+              Logger.error("All retry attempts failed for thread");
+            }
           }
-        } catch (error) {
-          this.postingState.failed++;
-          Logger.error("Error posting thread:", error);
         }
 
         // Clean up alarm data
@@ -583,73 +636,6 @@ const keepAlive = () => {
 // Keep alive every 20 seconds
 setInterval(keepAlive, 20000);
 
-// Detached popup window handler
-chrome.action.onClicked.addListener(async () => {
-  Logger.log("Extension icon clicked - opening detached window");
-
-  // Query ALL tabs to debug
-  const allTabs = await chrome.tabs.query({});
-  Logger.log(`Total tabs open: ${allTabs.length}`);
-
-  // Log tabs that might be Threads
-  const threadLikeTabs = allTabs.filter(
-    (tab) =>
-      tab.url &&
-      (tab.url.includes("threads.com") || tab.url.includes("threads.net"))
-  );
-  Logger.log(`Tabs containing 'threads': ${threadLikeTabs.length}`);
-  threadLikeTabs.forEach((tab) => {
-    Logger.log(`Thread-like tab: ${tab.url}`);
-  });
-
-  // Just check if any Threads tab exists, don't open new ones
-  let threadsTabs = await chrome.tabs.query({
-    url: [
-      "https://www.threads.com/*",
-      "https://*.threads.com/*",
-      "https://threads.net/*",
-      "https://*.threads.net/*",
-    ],
-  });
-
-  Logger.log(`Found ${threadsTabs.length} Threads tabs with URL query`);
-
-  let threadsTab = threadsTabs[0];
-
-  // Store the tab ID if found (for reference, not for opening)
-  if (threadsTab) {
-    await Storage.set("threadsTabId", threadsTab.id);
-    Logger.log(`Found existing Threads tab: ${threadsTab.url}`);
-  } else {
-    Logger.log("No Threads tab found - user can open one when needed");
-  }
-
-  // Get or create extension window
-  let response = await Storage.get("extensionWindowId");
-  let windowId = response || 0;
-
-  // Try to focus existing window
-  try {
-    await chrome.windows.update(windowId, { focused: true });
-    Logger.log("Focused existing extension window");
-  } catch (error) {
-    // Window doesn't exist, create new one
-    Logger.log("Creating new extension window");
-
-    const window = await chrome.windows.create({
-      url: chrome.runtime.getURL("popup.html"),
-      type: "popup",
-      focused: true,
-      height: 700,
-      width: 450,
-      left: 100,
-      top: 100,
-    });
-
-    await Storage.set("extensionWindowId", window.id);
-  }
-});
-
 // Handle window closed event
 chrome.windows.onRemoved.addListener(async (windowId) => {
   const storedWindowId = await Storage.get("extensionWindowId");
@@ -658,4 +644,3 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
     await Storage.remove("extensionWindowId");
   }
 });
-

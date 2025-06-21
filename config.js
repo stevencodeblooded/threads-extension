@@ -72,6 +72,150 @@ async function simulateTyping(element, text, options = {}) {
   }
 }
 
+// Enhanced human behavior simulation
+async function simulateHumanScrolling() {
+  const scrollPatterns = [
+    { distance: 100, duration: 300 },
+    { distance: -50, duration: 200 }, // Scroll back up
+    { distance: 200, duration: 500 },
+    { distance: 150, duration: 400 },
+    { distance: -30, duration: 150 }, // Small correction
+  ];
+  
+  for (const pattern of scrollPatterns) {
+    if (Math.random() > 0.7) continue; // Skip some scrolls
+    
+    const steps = Math.abs(pattern.distance) / 10;
+    const stepDelay = pattern.duration / steps;
+    const direction = pattern.distance > 0 ? 1 : -1;
+    
+    for (let i = 0; i < steps; i++) {
+      window.scrollBy(0, 10 * direction);
+      await new Promise(resolve => setTimeout(resolve, stepDelay));
+    }
+    
+    // Random pause between scroll actions
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+  }
+}
+
+// Simulate random clicks on page (non-functional areas)
+async function simulateRandomClicks() {
+  // Only do this occasionally
+  if (Math.random() > 0.3) return;
+  
+  // Find safe areas to click (background, non-interactive elements)
+  const safeElements = document.querySelectorAll('div:not([role="button"]):not([contenteditable])');
+  if (safeElements.length === 0) return;
+  
+  const randomElement = safeElements[Math.floor(Math.random() * safeElements.length)];
+  const rect = randomElement.getBoundingClientRect();
+  
+  // Only click if element is visible
+  if (rect.width > 0 && rect.height > 0) {
+    const x = rect.left + Math.random() * rect.width;
+    const y = rect.top + Math.random() * rect.height;
+    
+    // Simulate mouse movement to position
+    await simulateMousePath(window.innerWidth / 2, window.innerHeight / 2, x, y);
+    
+    // Click
+    const clickEvent = new MouseEvent('click', {
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      cancelable: true
+    });
+    
+    randomElement.dispatchEvent(clickEvent);
+    Logger.log(`Simulated random click at ${Math.round(x)}, ${Math.round(y)}`);
+  }
+}
+
+// Simulate mouse movement path
+async function simulateMousePath(startX, startY, endX, endY) {
+  const steps = 20;
+  const duration = 500; // milliseconds
+  
+  for (let i = 0; i <= steps; i++) {
+    const progress = i / steps;
+    // Add some curve to the path
+    const curve = Math.sin(progress * Math.PI) * 50;
+    const x = startX + (endX - startX) * progress + curve;
+    const y = startY + (endY - startY) * progress;
+    
+    const moveEvent = new MouseEvent('mousemove', {
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      cancelable: true
+    });
+    
+    document.dispatchEvent(moveEvent);
+    await new Promise(resolve => setTimeout(resolve, duration / steps));
+  }
+}
+
+// Enhanced typing with more realistic patterns
+async function enhancedHumanTyping(element, text) {
+  element.focus();
+  
+  const words = text.split(' ');
+  
+  for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
+    const word = words[wordIndex];
+    
+    // Type each character in the word
+    for (let charIndex = 0; charIndex < word.length; charIndex++) {
+      const char = word[charIndex];
+      
+      // Typing speed varies by character position
+      let delay;
+      if (charIndex === 0) {
+        // First character of word - slightly slower
+        delay = Math.random() * 150 + 100;
+      } else if (charIndex === word.length - 1) {
+        // Last character of word - might be slightly slower
+        delay = Math.random() * 120 + 80;
+      } else {
+        // Middle characters - faster
+        delay = Math.random() * 80 + 50;
+      }
+      
+      // Occasional typo
+      if (Math.random() < 0.03 && charIndex > 0 && charIndex < word.length - 1) {
+        // Type wrong character
+        const wrongChar = String.fromCharCode(char.charCodeAt(0) + 1);
+        document.execCommand("insertText", false, wrongChar);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        // Realize mistake (pause)
+        await new Promise(resolve => setTimeout(resolve, Math.random() * 300 + 200));
+        
+        // Delete it
+        document.execCommand("delete");
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      // Type correct character
+      document.execCommand("insertText", false, char);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    
+    // Add space after word (except last word)
+    if (wordIndex < words.length - 1) {
+      document.execCommand("insertText", false, " ");
+      // Pause between words
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 100));
+    }
+    
+    // Occasional longer pause (thinking)
+    if (Math.random() < 0.1) {
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+    }
+  }
+}
+
 // Type a single character
 async function typeCharacter(element, char) {
   const event = new KeyboardEvent("keydown", {

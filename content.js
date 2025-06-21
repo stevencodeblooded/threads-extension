@@ -9,30 +9,29 @@ const CONFIG = {
       MIN_CHAR_DELAY: 50,
       MAX_CHAR_DELAY: 150,
       PARAGRAPH_PAUSE: 500,
-      MISTAKE_PROBABILITY: 0.02
+      MISTAKE_PROBABILITY: 0.02,
     },
     SCROLLING: {
       SCROLL_PAUSE_MIN: 200,
-      SCROLL_PAUSE_MAX: 800
+      SCROLL_PAUSE_MAX: 800,
     },
     MOUSE: {
       MOVEMENT_PROBABILITY: 0.3,
       MIN_MOVEMENT: 50,
-      MAX_MOVEMENT: 200
-    }
+      MAX_MOVEMENT: 200,
+    },
   },
   UI: {
-    MAX_THREAD_PREVIEW_LENGTH: 100
-  }
+    MAX_THREAD_PREVIEW_LENGTH: 100,
+  },
 };
 
-// Comprehensive list of UI elements to filter out
+// Replace the current UI_ELEMENTS_TO_FILTER with this more restrictive version:
 const UI_ELEMENTS_TO_FILTER = [
-  "Traducir", "Translate", "View translation", "Ver traducción",
-  "See translation", "Show translation", "Ver más", "See more",
-  "Show more", "Mostrar más", "Load more", "Cargar más",
-  "Reply", "Responder", "Like", "Me gusta", "Share", "Compartir",
-  "Follow", "Seguir", "Following", "Siguiendo"
+  "Traducir",
+  "Translate", 
+  "View translation",
+  "Ver traducción"
 ];
 
 // Selectors based on the provided document
@@ -49,11 +48,24 @@ const BUTTON_TEXT = {
 
 // Add after existing constants (around line 20)
 const MAX_THREADS_TO_EXTRACT = 100;
-const SCROLL_WAIT_TIME = 2000;
-const MAX_SCROLL_ATTEMPTS = 50;
+const SCROLL_WAIT_TIME = 10000; // 10 seconds wait after each scroll
+const MAX_SCROLL_ATTEMPTS = 5; // Only do 5 scroll attempts max
 
 // For tracking processed threads (prevents duplicates during scrolling)
 const processedThreadIds = new Set();
+
+// Scrolling configuration for extraction
+const SCROLL_CONFIG = {
+  STEPS: 5, // Reduced from 10 to 5 small scrolls
+  MIN_STEP_DELAY: 300, // Minimum delay between scroll steps (ms)
+  MAX_STEP_DELAY: 800, // Maximum delay between scroll steps (ms)
+  READING_PAUSE_CHANCE: 0.5, // 50% chance to pause and "read" (increased from 30%)
+  MIN_READING_PAUSE: 2000, // Minimum reading pause (2 seconds)
+  MAX_READING_PAUSE: 5000, // Maximum reading pause (5 seconds)
+  CONTENT_LOAD_WAIT: 10000, // Wait 10 seconds after reaching bottom
+  SCROLL_BACK_CHANCE: 0.3, // 30% chance to scroll back up briefly
+  BETWEEN_SCROLL_WAIT: 10000, // 10 seconds between major scroll actions
+};
 
 // Track application state to handle context-dependent buttons
 let appState = {
@@ -112,10 +124,17 @@ async function extractThreads(
     let noNewContentCount = 0; // Track consecutive attempts with no new content
     const MAX_NO_CONTENT_ATTEMPTS = 3; // Stop after 3 consecutive attempts with no new content
 
+    // Reset stop flag
+    window.stopExtractionFlag = false;
+
     log(`Starting extraction of ${count} threads`, "info");
 
     // Keep extracting until we have enough threads or hit limits
-    while (threads.length < count && scrollAttempts < MAX_SCROLL_ATTEMPTS) {
+    while (
+      threads.length < count &&
+      scrollAttempts < MAX_SCROLL_ATTEMPTS &&
+      !window.stopExtractionFlag
+    ) {
       // Get current visible thread elements
       const threadElements = document.querySelectorAll(
         THREAD_CONTAINER_SELECTOR
@@ -166,14 +185,14 @@ async function extractThreads(
 
       // Check if we're at the end of available content
       const currentHeight = document.documentElement.scrollHeight;
-      
+
       if (currentHeight === lastHeight) {
         noNewContentCount++;
         log(
           `No new content loaded. Attempt ${noNewContentCount}/${MAX_NO_CONTENT_ATTEMPTS}`,
           "warn"
         );
-        
+
         if (noNewContentCount >= MAX_NO_CONTENT_ATTEMPTS) {
           log(
             `Reached end of available content. Extracted ${threads.length} threads out of requested ${count}`,
@@ -181,7 +200,7 @@ async function extractThreads(
           );
           break;
         }
-        
+
         // Try scrolling up a bit then down again
         window.scrollTo({
           top: window.scrollY - 500,
@@ -199,16 +218,86 @@ async function extractThreads(
         "info"
       );
 
-      // Smooth scroll down
-      window.scrollTo({
-        top: document.documentElement.scrollHeight,
-        behavior: "smooth",
-      });
+      // Human-like scrolling with multiple small scrolls
+      // Human-like scrolling with fewer, slower scrolls
+      const currentScrollPosition = window.scrollY;
+      const targetScrollPosition = document.documentElement.scrollHeight;
+      const scrollDistance = targetScrollPosition - currentScrollPosition;
+      const stepSize = scrollDistance / SCROLL_CONFIG.STEPS;
 
-      // Wait for new content to load
-      await new Promise((resolve) => setTimeout(resolve, SCROLL_WAIT_TIME));
-      
+      log(`Starting gradual scroll with ${SCROLL_CONFIG.STEPS} steps`, "info");
+
+      // Perform gradual scrolling with fewer steps
+      for (let i = 0; i < SCROLL_CONFIG.STEPS; i++) {
+        // Scroll a small step
+        window.scrollTo({
+          top: currentScrollPosition + stepSize * (i + 1),
+          behavior: "smooth",
+        });
+
+        // Longer pause between scroll steps
+        const stepDelay =
+          Math.random() *
+            (SCROLL_CONFIG.MAX_STEP_DELAY - SCROLL_CONFIG.MIN_STEP_DELAY) +
+          SCROLL_CONFIG.MIN_STEP_DELAY;
+        await new Promise((resolve) => setTimeout(resolve, stepDelay));
+
+        // More frequent and longer reading pauses
+        if (Math.random() < SCROLL_CONFIG.READING_PAUSE_CHANCE) {
+          const readingPause =
+            Math.random() *
+              (SCROLL_CONFIG.MAX_READING_PAUSE -
+                SCROLL_CONFIG.MIN_READING_PAUSE) +
+            SCROLL_CONFIG.MIN_READING_PAUSE;
+          log(`Pausing to "read" for ${readingPause / 1000} seconds`, "info");
+          await new Promise((resolve) => setTimeout(resolve, readingPause));
+        }
+      }
+
+      // Wait for content to load (10 seconds)
+      log(
+        `Waiting ${
+          SCROLL_CONFIG.CONTENT_LOAD_WAIT / 1000
+        } seconds for content to load`,
+        "info"
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, SCROLL_CONFIG.CONTENT_LOAD_WAIT)
+      );
+
+      // Sometimes scroll up a bit then down again (human behavior)
+      if (Math.random() < SCROLL_CONFIG.SCROLL_BACK_CHANCE) {
+        log("Scrolling back up briefly (human behavior)", "info");
+        window.scrollTo({
+          top: window.scrollY - 300,
+          behavior: "smooth",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        window.scrollTo({
+          top: document.documentElement.scrollHeight,
+          behavior: "smooth",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      // Additional wait between scroll attempts
+      log(
+        `Waiting ${
+          SCROLL_CONFIG.BETWEEN_SCROLL_WAIT / 1000
+        } seconds before next scroll attempt`,
+        "info"
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, SCROLL_CONFIG.BETWEEN_SCROLL_WAIT)
+      );
       scrollAttempts++;
+    }
+
+    // Check if extraction was stopped
+    if (window.stopExtractionFlag) {
+      log("Extraction stopped by user", "warn");
+      window.stopExtractionFlag = false;
     }
 
     // Clear processed IDs for next extraction
@@ -229,88 +318,104 @@ async function extractThreads(
   }
 }
 
-// Helper function to extract content from a single thread element
+// Replace the current extractThreadContent function with this corrected version:
 function extractThreadContent(threadElement) {
   try {
     const paragraphs = [];
 
-    // First try to find specific content paragraphs and filter out UI elements
-    const paragraphElements = Array.from(
-      threadElement.querySelectorAll('div[dir="auto"]')
-    ).filter((el) => {
-      // Get the text content to check
-      const text = el.textContent.trim();
+    // Primary method: Look for ALL span elements that contain thread content
+    const contentSpans = threadElement.querySelectorAll(
+      'span.x1lliihq.x1plvlek.xryxfnj.x1n2onr6.x1ji0vk5'
+    );
 
-      // Filter out common UI elements
-      const isUiElement =
-        el.classList.contains("x1q0g3np") || // Common UI class
-        el.closest('[role="button"]') || // Is or is inside a button
-        el.getAttribute("data-lexical-text") === "true" || // Lexical editor UI element
-        UI_ELEMENTS_TO_FILTER.includes(text) || // Check against comprehensive filter list
-        text.length < 2 || // Too short to be real content
-        el.querySelector('[role="button"]') || // Contains a button
-        el.closest('[aria-label*="Translate"]') || // Translation-related elements
-        el.closest('[aria-label*="Traducir"]'); // Spanish translation elements
-
-      return !isUiElement && text.length > 0;
-    });
-
-    if (paragraphElements.length > 0) {
-      // If we find paragraph elements, extract text from each one
-      paragraphElements.forEach((para) => {
-        const text = para.textContent.trim();
-        if (text && text !== "Traducir" && text !== "Translate") {
-          // Double-check the text is not a UI element
-          const hasSpecialContent =
-            para.querySelector("img") ||
-            para.querySelector("span[aria-label]") ||
-            /[^\x00-\x7F]/.test(text); // Contains non-ASCII characters (like emojis)
-
-          if (hasSpecialContent) {
-            log(
-              `Preserving special content in paragraph: ${text.substring(
-                0,
-                30
-              )}...`,
-              "info"
-            );
-            paragraphs.push({
-              text: text,
-              hasSpecialContent: true,
-              originalHTML: para.innerHTML,
-            });
-          } else {
-            paragraphs.push({
-              text: text,
-              hasSpecialContent: false,
-            });
+    if (contentSpans.length > 0) {
+      let allTextParts = []; // Changed from single fullText to array
+      
+      contentSpans.forEach((span) => {
+        const textSpan = span.querySelector('span') || span;
+        if (textSpan && textSpan.textContent) {
+          const text = textSpan.textContent.trim();
+          
+          // Only skip if it's clearly a UI element (very restrictive filtering)
+          const isUIElement = 
+            // Only skip actual buttons
+            textSpan.closest('[role="button"]') ||
+            // Only skip if it's exactly a translate button
+            (text === "Traducir" || text === "Translate") ||
+            // Skip if it's hidden
+            textSpan.getAttribute("aria-hidden") === "true";
+            
+          if (text && !isUIElement) {
+            // Get the text content while preserving line breaks
+            const preservedText = textSpan.innerText || textSpan.textContent;
+            allTextParts.push(preservedText.trim()); // Add to array instead of overwriting
           }
         }
       });
-    } else {
-      // Fallback to using innerText which should preserve line breaks
-      const rawText = threadElement.innerText;
-      const lines = rawText.split(/\r?\n/).filter((line) => {
-        const trimmed = line.trim();
-        return (
-          trimmed &&
-          !UI_ELEMENTS_TO_FILTER.includes(trimmed) &&
-          trimmed.length > 1
-        );
-      });
 
-      lines.forEach((line) => {
-        paragraphs.push({
-          text: line.trim(),
-          hasSpecialContent: /[^\x00-\x7F]/.test(line),
+      // Combine all text parts with proper spacing
+      const fullText = allTextParts.join('\n\n'); // Join all parts
+
+      if (fullText) {
+        // Split by double line breaks to identify paragraphs
+        const paragraphTexts = fullText.split(/\n\n+/);
+        
+        paragraphTexts.forEach(paragraphText => {
+          if (paragraphText.trim()) {
+            paragraphs.push({
+              text: paragraphText.trim(),
+              hasSpecialContent: /[^\x00-\x7F]/.test(paragraphText),
+              hasLineBreaks: paragraphText.includes('\n')
+            });
+          }
         });
+      }
+    }
+
+    // Improved fallback method - collect ALL text content
+    if (paragraphs.length === 0) {
+      // Get all direct text-containing spans under the main container
+      const allSpans = threadElement.querySelectorAll('span');
+      let allTextParts = [];
+      
+      allSpans.forEach((span) => {
+        // Skip if it's inside a button
+        if (span.closest('[role="button"]')) return;
+        
+        // Skip translate buttons specifically
+        const text = span.textContent.trim();
+        if (text === "Traducir" || text === "Translate" || text === "Ver traducción" || text === "View translation") return;
+        
+        // If this span has text and no child spans with text, it's likely content
+        if (text && !span.querySelector('span:not(:empty)')) {
+          allTextParts.push(text);
+        }
       });
+      
+      // Remove duplicates and join
+      const uniqueTextParts = [...new Set(allTextParts)];
+      const fullText = uniqueTextParts.join('\n\n');
+      
+      if (fullText.trim()) {
+        const paragraphTexts = fullText.split(/\n\n+/);
+        
+        paragraphTexts.forEach(paragraphText => {
+          if (paragraphText.trim()) {
+            paragraphs.push({
+              text: paragraphText.trim(),
+              hasSpecialContent: /[^\x00-\x7F]/.test(paragraphText),
+              hasLineBreaks: paragraphText.includes('\n')
+            });
+          }
+        });
+      }
     }
 
     // Build the thread text with proper spacing
     const threadText = paragraphs.map((p) => p.text).join("\n\n");
 
-    if (threadText) {
+    if (threadText && threadText.length > 5) {
+      log(`Extracted thread with ${paragraphs.length} paragraphs: ${threadText.substring(0, 100)}...`, "info");
       return {
         text: threadText,
         paragraphs: paragraphs,
@@ -322,6 +427,24 @@ function extractThreadContent(threadElement) {
     log(`Error extracting thread content: ${error.message}`, "error");
     return null;
   }
+}
+
+// Helper function to split thread into multiple posts based on double line breaks
+function splitThreadIntoPosts(threadText) {
+  // Split by double line breaks (two enters)
+  const posts = threadText.split(/\n\n+/).filter((text) => text.trim());
+
+  log(`Splitting thread into ${posts.length} separate posts`, "info");
+
+  return posts.map((post) => ({
+    text: post.trim(),
+    paragraphs: [
+      {
+        text: post.trim(),
+        hasSpecialContent: /[^\x00-\x7F]/.test(post.trim()),
+      },
+    ],
+  }));
 }
 
 // Helper function to get unique ID for a thread
@@ -829,7 +952,139 @@ function getButtonPosition(button) {
   };
 }
 
-// Updated posting function to better preserve formatting and handle extracted thread objects
+// Enhanced typing with more realistic patterns
+async function enhancedHumanTyping(element, text) {
+  element.focus();
+
+  const words = text.split(" ");
+
+  for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
+    const word = words[wordIndex];
+
+    // Type each character in the word
+    for (let charIndex = 0; charIndex < word.length; charIndex++) {
+      const char = word[charIndex];
+
+      // Typing speed varies by character position
+      let delay;
+      if (charIndex === 0) {
+        // First character of word - slightly slower
+        delay = Math.random() * 150 + 100;
+      } else if (charIndex === word.length - 1) {
+        // Last character of word - might be slightly slower
+        delay = Math.random() * 120 + 80;
+      } else {
+        // Middle characters - faster
+        delay = Math.random() * 80 + 50;
+      }
+
+      // Occasional typo
+      if (
+        Math.random() < 0.03 &&
+        charIndex > 0 &&
+        charIndex < word.length - 1
+      ) {
+        // Type wrong character
+        const wrongChar = String.fromCharCode(char.charCodeAt(0) + 1);
+        document.execCommand("insertText", false, wrongChar);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+
+        // Realize mistake (pause)
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.random() * 300 + 200)
+        );
+
+        // Delete it
+        document.execCommand("delete");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      // Type correct character
+      document.execCommand("insertText", false, char);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+
+    // Add space after word (except last word)
+    if (wordIndex < words.length - 1) {
+      document.execCommand("insertText", false, " ");
+      // Pause between words
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.random() * 200 + 100)
+      );
+    }
+
+    // Occasional longer pause (thinking)
+    if (Math.random() < 0.1) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.random() * 1000 + 500)
+      );
+    }
+  }
+}
+
+// Enhanced human behavior simulation
+async function simulateHumanScrolling() {
+  const scrollPatterns = [
+    { distance: 100, duration: 300 },
+    { distance: -50, duration: 200 }, // Scroll back up
+    { distance: 200, duration: 500 },
+    { distance: 150, duration: 400 },
+    { distance: -30, duration: 150 }, // Small correction
+  ];
+
+  for (const pattern of scrollPatterns) {
+    if (Math.random() > 0.7) continue; // Skip some scrolls
+
+    const steps = Math.abs(pattern.distance) / 10;
+    const stepDelay = pattern.duration / steps;
+    const direction = pattern.distance > 0 ? 1 : -1;
+
+    for (let i = 0; i < steps; i++) {
+      window.scrollBy(0, 10 * direction);
+      await new Promise((resolve) => setTimeout(resolve, stepDelay));
+    }
+
+    // Random pause between scroll actions
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.random() * 1000 + 500)
+    );
+  }
+}
+
+// Simulate random clicks on page (non-functional areas)
+async function simulateRandomClicks() {
+  // Only do this occasionally
+  if (Math.random() > 0.3) return;
+
+  // Find safe areas to click (background, non-interactive elements)
+  const safeElements = document.querySelectorAll(
+    'div:not([role="button"]):not([contenteditable])'
+  );
+  if (safeElements.length === 0) return;
+
+  const randomElement =
+    safeElements[Math.floor(Math.random() * safeElements.length)];
+  const rect = randomElement.getBoundingClientRect();
+
+  // Only click if element is visible
+  if (rect.width > 0 && rect.height > 0) {
+    const x = rect.left + Math.random() * rect.width;
+    const y = rect.top + Math.random() * rect.height;
+
+    // Click
+    const clickEvent = new MouseEvent("click", {
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    randomElement.dispatchEvent(clickEvent);
+    log(`Simulated random click at ${Math.round(x)}, ${Math.round(y)}`, "info");
+  }
+}
+
+// Updated posting function that preserves human-like typing AND line breaks
 async function postThread(threadObj) {
   // We now expect threadObj to be an object with text and paragraphs properties
   // If it's just a string, convert it to the expected format
@@ -837,7 +1092,10 @@ async function postThread(threadObj) {
     typeof threadObj === "string"
       ? {
           text: threadObj,
-          paragraphs: threadObj.split("\n\n").map((p) => ({ text: p })),
+          paragraphs: threadObj.split("\n\n").map((p) => ({ 
+            text: p.trim(),
+            hasLineBreaks: p.includes('\n')
+          })),
         }
       : threadObj;
 
@@ -895,13 +1153,31 @@ async function postThread(threadObj) {
       throw new Error("Text area not found");
     }
 
-    // THREADS-SPECIFIC APPROACH: Use manual keyboard events to simulate typing
-    // with Enter key presses between paragraphs
+    // Check if page is visible before proceeding
+    if (document.hidden) {
+      log("Page is hidden/minimized. Waiting for visibility...", "warn");
+      await new Promise((resolve) => {
+        const handleVisibilityChange = () => {
+          if (!document.hidden) {
+            document.removeEventListener(
+              "visibilitychange",
+              handleVisibilityChange
+            );
+            resolve();
+          }
+        };
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+        // Also resolve after 5 seconds as fallback
+        setTimeout(resolve, 5000);
+      });
+    }
 
-    // Focus and clear the editor
     textArea.focus();
     textArea.innerHTML = "";
     await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // Force the element into view
+    textArea.scrollIntoView({ behavior: "instant", block: "center" });
 
     // Get paragraphs from the thread data
     const paragraphs = threadData.paragraphs || [];
@@ -912,159 +1188,94 @@ async function postThread(threadObj) {
       throw new Error("Reposting stopped by user");
     }
 
-    // APPROACH #1: Simulate keyboard events for each paragraph and press Enter between them
-    // APPROACH #1: Simulate human-like typing with proper delays
+    // RESTORED: Human-like typing with proper line break handling
     try {
-      // Focus the text area
       textArea.focus();
+      
+      // Clear the editor completely
+      textArea.innerHTML = "";
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
+      // Type each paragraph with human-like behavior
       for (let i = 0; i < paragraphs.length; i++) {
         const paragraph = paragraphs[i];
-
-        // Add line breaks between paragraphs
-        if (i > 0) {
-          // Simulate pressing Enter twice for paragraph spacing
-          await new Promise((resolve) => setTimeout(resolve, 300));
-
-          const enterEvent = new KeyboardEvent("keydown", {
-            key: "Enter",
-            code: "Enter",
-            keyCode: 13,
-            which: 13,
-            bubbles: true,
-            cancelable: true,
-          });
-
-          textArea.dispatchEvent(enterEvent);
-          await new Promise((resolve) => setTimeout(resolve, 200));
-
-          // Add extra Enter for more spacing if needed
-          if (
-            paragraph.text?.startsWith("Then,") ||
-            i === paragraphs.length - 2
-          ) {
+        const paragraphText = paragraph.text || paragraph;
+        
+        // Split the paragraph by line breaks to handle them properly
+        const lines = paragraphText.split('\n');
+        
+        // Type each line within the paragraph
+        for (let j = 0; j < lines.length; j++) {
+          const line = lines[j];
+          
+          // Use the enhanced human typing for each line
+          await enhancedHumanTyping(textArea, line);
+          
+          // If not the last line in the paragraph, press Enter once
+          if (j < lines.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            
+            // Simulate pressing Enter key
+            const enterEvent = new KeyboardEvent("keydown", {
+              key: "Enter",
+              code: "Enter",
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+              cancelable: true,
+            });
             textArea.dispatchEvent(enterEvent);
+            
+            // Use insertLineBreak for single line break
+            document.execCommand("insertLineBreak");
+            
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          }
+        }
+        
+        // If not the last paragraph, add double line break
+        if (i < paragraphs.length - 1) {
+          // Wait a bit before paragraph break
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          
+          // Press Enter twice for paragraph break
+          for (let k = 0; k < 2; k++) {
+            const enterEvent = new KeyboardEvent("keydown", {
+              key: "Enter",
+              code: "Enter",
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+              cancelable: true,
+            });
+            textArea.dispatchEvent(enterEvent);
+            
+            document.execCommand("insertLineBreak");
             await new Promise((resolve) => setTimeout(resolve, 200));
           }
+          
+          // Pause between paragraphs (human thinking time)
+          await new Promise((resolve) => setTimeout(resolve, 800));
         }
-
-        // Type each character with human-like delays
-        const paragraphText = paragraph.text || paragraph;
-
-        for (let j = 0; j < paragraphText.length; j++) {
-          const char = paragraphText[j];
-
-          // Insert the character
-          document.execCommand("insertText", false, char);
-
-          // Variable typing delay
-          let delay = Math.random() * (200 - 80) + 80; // 80-200ms per character
-
-          // Longer pause after punctuation
-          if ([".", "!", "?", ",", ";", ":"].includes(char)) {
-            delay += Math.random() * 300 + 200; // Additional 200-500ms
-          }
-
-          // Pause after spaces (between words)
-          if (char === " ") {
-            delay += Math.random() * 150 + 50; // Additional 50-200ms
-          }
-
-          // Occasionally make a "typo" and correct it
-          if (Math.random() < 0.02 && j > 0 && j < paragraphText.length - 1) {
-            // Make a typo
-            const wrongChar = String.fromCharCode(char.charCodeAt(0) + 1);
-            document.execCommand("insertText", false, wrongChar);
-            await new Promise((resolve) => setTimeout(resolve, 150));
-
-            // Delete the typo
-            document.execCommand("delete");
-            await new Promise((resolve) => setTimeout(resolve, 100));
-
-            // Type correct character
-            document.execCommand("insertText", false, char);
-          }
-
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-
-        // Pause between paragraphs
-        await new Promise((resolve) => setTimeout(resolve, 800));
       }
 
-      log("Completed human-like typing simulation", "info");
+      log("Completed human-like typing with proper formatting", "info");
+      
     } catch (e) {
-      log(`Error in typing simulation: ${e.message}`, "warn");
-
-      // APPROACH #2: If that fails, try the direct HTML approach again but with specific Threads.net formatting
+      log(`Error in human typing: ${e.message}`, "warn");
+      
+      // Fallback: If human typing fails, use direct text insertion
       try {
-        // Clear the editor
         textArea.innerHTML = "";
-        await new Promise((resolve) => setTimeout(resolve, 300));
-
-        // This specific HTML structure is what Threads.net creates when you manually type paragraphs
-        // We're directly emulating the DOM structure that Threads creates
-        let html = "";
-        for (let i = 0; i < paragraphs.length; i++) {
-          const paragraph = paragraphs[i];
-          const paragraphText = paragraph.text || paragraph;
-
-          // If this paragraph has special content and we have the original HTML
-          if (paragraph.hasSpecialContent && paragraph.originalHTML) {
-            html += `<div>${paragraph.originalHTML}</div>`;
-          } else {
-            // Regular text paragraph
-            html += `<div>${paragraphText}</div>`;
-          }
-
-          // Between paragraphs, add an empty div with <br> (this is how Threads represents a new line)
-          if (i < paragraphs.length - 1) {
-            // Add extra empty lines before certain paragraphs
-            if (
-              i < paragraphs.length - 2 &&
-              (paragraphs[i + 1].text?.startsWith("Then,") ||
-                i === paragraphs.length - 3)
-            ) {
-              // Extra space before the last real paragraph
-              html += "<div><br></div><div><br></div>"; // Double line break
-            } else {
-              html += "<div><br></div>"; // Single line break
-            }
-          }
-        }
-
-        // Set the HTML directly
-        textArea.innerHTML = html;
-        log("Applied Threads-specific paragraph HTML structure", "info");
+        textArea.focus();
+        
+        // Just insert the original text as-is
+        document.execCommand("insertText", false, threadData.text);
+        
       } catch (e2) {
-        log(`Error in HTML structure approach: ${e2.message}`, "warn");
-
-        // APPROACH #3: Last resort - try to use clipboard
-        try {
-          // Format the text with double line breaks for pasting
-          const formattedText = paragraphs
-            .map((p) => p.text || p)
-            .join("\n\n\n"); // Use triple newlines for more spacing
-
-          // Use clipboard API if available
-          await navigator.clipboard.writeText(formattedText);
-
-          // Clear and focus
-          textArea.innerHTML = "";
-          textArea.focus();
-
-          // Paste the content
-          document.execCommand("paste");
-          log("Used clipboard paste as last resort", "info");
-        } catch (e3) {
-          log(
-            `All paragraph preservation approaches failed: ${e3.message}`,
-            "error"
-          );
-
-          // If all else fails, just set the text content directly
-          textArea.textContent = threadData.text;
-        }
+        log(`Fallback also failed: ${e2.message}`, "error");
+        // Last resort - set innerHTML
+        textArea.innerHTML = threadData.text.replace(/\n/g, '<br>');
       }
     }
 
@@ -1089,11 +1300,6 @@ async function postThread(threadObj) {
         )}...`,
         "info"
       );
-      // Also log the HTML structure for debugging
-      log(
-        `Editor HTML structure: ${textArea.innerHTML.substring(0, 200)}...`,
-        "info"
-      );
     } else {
       log("WARNING: Text verification failed - editor appears empty", "error");
     }
@@ -1112,8 +1318,55 @@ async function postThread(threadObj) {
       throw new Error("Failed to click post button");
     }
 
-    // Add a longer wait after posting to ensure completion before next post
-    log("Waiting for post to complete", "info");
+    // CRITICAL: Verify post was actually submitted
+    log("Verifying post submission...", "info");
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // Check multiple indicators of success/failure
+    // 1. Check if modal is closed
+    const modal = document.querySelector('[role="dialog"]');
+    const textAreaStillVisible = document.querySelector(
+      '[contenteditable="true"][role="textbox"]'
+    );
+
+    if (modal || textAreaStillVisible) {
+      // Check if there's still content in the editor
+      const content = textAreaStillVisible
+        ? textAreaStillVisible.textContent.trim()
+        : "";
+      if (content.length > 0) {
+        log("Post failed - modal still open with content", "error");
+        throw new Error("Post submission failed - content still in editor");
+      }
+    }
+
+    // 2. Look for success indicators (like a toast notification)
+    const successIndicators = document.querySelectorAll(
+      '[role="status"], [class*="success"], [class*="posted"]'
+    );
+    if (successIndicators.length > 0) {
+      log("Found success indicator", "info");
+    }
+
+    // 3. Check URL change (threads often updates URL after posting)
+    const currentUrl = window.location.href;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const newUrl = window.location.href;
+    if (newUrl !== currentUrl) {
+      log("URL changed after posting - likely success", "info");
+    }
+
+    // Check for error messages
+    const errorIndicators = document.querySelectorAll(
+      '[role="alert"], .error, [class*="error"]'
+    );
+    if (errorIndicators.length > 0) {
+      log("Error indicator found after posting attempt", "error");
+      throw new Error("Post submission failed - error detected");
+    }
+
+    // Add a longer wait after posting to ensure completion
+    log("Post appears successful, waiting for completion", "info");
     await new Promise((resolve) => setTimeout(resolve, 5000));
 
     return true;
@@ -1217,6 +1470,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       for (let i = 0; i < request.threads.length; i++) {
         const dynamicDelay = getRandomDelay(request.minDelay, request.maxDelay);
+
+        // Add human-like behavior between posts
+        if (i > 0) {
+          log("Simulating human behavior between posts", "info");
+
+          // Random scrolling
+          await simulateHumanScrolling();
+
+          // Occasional random clicks
+          await simulateRandomClicks();
+
+          // Variable pause to seem more human
+          const extraPause = Math.random() * 5000 + 2000; // 2-7 seconds
+          await new Promise((resolve) => setTimeout(resolve, extraPause));
+        }
 
         chrome.runtime.sendMessage({
           action: "repostStatus",
@@ -1335,6 +1603,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     repostAllThreads();
     return true;
+  } else if (request.action === "stopExtraction") {
+    // Set flag to stop extraction
+    window.stopExtractionFlag = true;
+    sendResponse({ success: true });
   } else if (request.action === "stopReposting") {
     appState.shouldStopReposting = true;
     appState.isStopping = true;
@@ -1428,7 +1700,7 @@ function simulateHumanDelay() {
 function productionLog(message, level = "info") {
   if (level === "error") {
     console.error(`[ThreadsPro] ${message}`);
-  } else if (localStorage.getItem('threadspro_debug') === 'true') {
+  } else if (localStorage.getItem("threadspro_debug") === "true") {
     console.log(`[ThreadsPro] ${message}`);
   }
 }
