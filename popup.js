@@ -601,8 +601,32 @@ class PopupManager {
       return;
     }
 
-    // NEW: Check for a special delimiter to split into multiple posts
-    // For example, use "---" on its own line to indicate separate posts
+    // NEW: Check if this is exported thread data that needs parsing
+    if (this.isExportedThreadData(text)) {
+      const parsedThreads = this.parseExportedThreads(text);
+
+      if (parsedThreads.length > 0) {
+        parsedThreads.forEach((threadText, index) => {
+          const threadData = {
+            text: threadText,
+            paragraphs: this.parseThreadParagraphs(threadText),
+            isPartOfSet: true,
+            setIndex: index + 1,
+            setTotal: parsedThreads.length,
+          };
+          this.addThreadToQueue(threadData);
+        });
+
+        this.showSuccess(
+          `Added ${parsedThreads.length} threads from exported data!`
+        );
+        composer.value = "";
+        this.updateCharCount(composer);
+        return;
+      }
+    }
+
+    // Existing logic for manual --- separation
     const THREAD_SEPARATOR = /^---$/m;
 
     if (THREAD_SEPARATOR.test(text)) {
@@ -612,7 +636,6 @@ class PopupManager {
       Logger.log(`Creating ${posts.length} separate posts using --- separator`);
 
       posts.forEach((postText, index) => {
-        // Keep all the formatting within each post intact
         const threadData = {
           text: postText.trim(),
           paragraphs: this.parseThreadParagraphs(postText.trim()),
@@ -639,6 +662,100 @@ class PopupManager {
     // Clear composer
     composer.value = "";
     this.updateCharCount(composer);
+  }
+
+  // NEW: Function to detect if text is exported thread data
+  isExportedThreadData(text) {
+    // Check for export header pattern
+    const hasExportHeader = /Threads Export - \d{1,2}\/\d{1,2}\/\d{4}/.test(
+      text
+    );
+    const hasTotalThreads = /Total Threads: \d+/.test(text);
+    const hasThreadSeparators = /Thread \d+:\s*-{10,}/.test(text);
+
+    return hasExportHeader && hasTotalThreads && hasThreadSeparators;
+  }
+
+  // NEW: Function to parse exported thread data
+  parseExportedThreads(text) {
+    const threads = [];
+
+    try {
+      // Split by thread separators and extract content
+      const threadPattern =
+        /Thread \d+:\s*-{10,}\s*([\s\S]*?)(?=Thread \d+:\s*-{10,}|$)/g;
+      let match;
+
+      while ((match = threadPattern.exec(text)) !== null) {
+        const threadContent = match[1].trim();
+
+        if (threadContent) {
+          // Clean up any remaining formatting artifacts
+          const cleanContent = threadContent
+            .replace(/^=+\s*$/gm, "") // Remove === lines
+            .replace(/^-+\s*$/gm, "") // Remove --- lines
+            .trim();
+
+          if (cleanContent) {
+            threads.push(cleanContent);
+          }
+        }
+      }
+
+      // Fallback: if regex didn't work, try simple splitting
+      if (threads.length === 0) {
+        const lines = text.split("\n");
+        let currentThread = "";
+        let inThreadContent = false;
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+
+          // Skip header and metadata lines
+          if (
+            trimmedLine.startsWith("Threads Export") ||
+            trimmedLine.startsWith("Total Threads:") ||
+            trimmedLine.match(/^=+$/) ||
+            trimmedLine === ""
+          ) {
+            continue;
+          }
+
+          // Start of new thread
+          if (trimmedLine.match(/^Thread \d+:$/)) {
+            // Save previous thread if exists
+            if (currentThread.trim()) {
+              threads.push(currentThread.trim());
+            }
+            currentThread = "";
+            inThreadContent = false;
+            continue;
+          }
+
+          // Thread separator line
+          if (trimmedLine.match(/^-{10,}$/)) {
+            inThreadContent = true;
+            continue;
+          }
+
+          // Thread content
+          if (inThreadContent) {
+            currentThread += (currentThread ? "\n" : "") + line;
+          }
+        }
+
+        // Don't forget the last thread
+        if (currentThread.trim()) {
+          threads.push(currentThread.trim());
+        }
+      }
+
+      Logger.log(`Parsed ${threads.length} threads from exported data`);
+      return threads;
+    } catch (error) {
+      Logger.error("Error parsing exported threads:", error);
+      return [];
+    }
   }
 
   // NEW: Helper function to parse paragraphs while preserving structure
