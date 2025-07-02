@@ -103,6 +103,11 @@ const CONFIG = {
   },
 };
 
+// Generate unique ID
+function generateId() {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
 // Freeze config to prevent modifications
 Object.freeze(CONFIG);
 Object.freeze(CONFIG.API);

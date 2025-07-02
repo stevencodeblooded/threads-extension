@@ -52,11 +52,25 @@ class PopupManager {
   // method to handle auto-refresh
   async autoRefreshIfNeeded() {
     try {
-      // Check if we're currently posting
+      // Check if we're currently posting - multiple checks for safety
       const postingStatus = await Messages.send("getPostingStatus");
+      const isCurrentlyPosting = await Storage.get("isCurrentlyPosting");
 
-      if (postingStatus && postingStatus.isPosting) {
+      if (
+        (postingStatus && postingStatus.isPosting) ||
+        isCurrentlyPosting ||
+        this.isPosting
+      ) {
         Logger.log("Currently posting - skipping auto-refresh");
+        this.showSuccess("Posting in progress - skipping page refresh");
+        return;
+      }
+
+      // Also check if there are threads in queue
+      if (this.threadQueue && this.threadQueue.length > 0 && this.isPosting) {
+        Logger.log(
+          "Threads in queue and posting active - skipping auto-refresh"
+        );
         return;
       }
 
@@ -601,36 +615,11 @@ class PopupManager {
       return;
     }
 
-    // NEW: Check if this is exported thread data that needs parsing
-    if (this.isExportedThreadData(text)) {
-      const parsedThreads = this.parseExportedThreads(text);
-
-      if (parsedThreads.length > 0) {
-        parsedThreads.forEach((threadText, index) => {
-          const threadData = {
-            text: threadText,
-            paragraphs: this.parseThreadParagraphs(threadText),
-            isPartOfSet: true,
-            setIndex: index + 1,
-            setTotal: parsedThreads.length,
-          };
-          this.addThreadToQueue(threadData);
-        });
-
-        this.showSuccess(
-          `Added ${parsedThreads.length} threads from exported data!`
-        );
-        composer.value = "";
-        this.updateCharCount(composer);
-        return;
-      }
-    }
-
-    // Existing logic for manual --- separation
-    const THREAD_SEPARATOR = /^---$/m;
+    // Check for --- separators (both exported and manual)
+    const THREAD_SEPARATOR = /\n\s*---\s*\n/;
 
     if (THREAD_SEPARATOR.test(text)) {
-      // User wants to create multiple separate posts
+      // Split by --- separator (works for both exported and manual content)
       const posts = text.split(THREAD_SEPARATOR).filter((p) => p.trim());
 
       Logger.log(`Creating ${posts.length} separate posts using --- separator`);
@@ -642,6 +631,9 @@ class PopupManager {
           isPartOfSet: true,
           setIndex: index + 1,
           setTotal: posts.length,
+          source: "written",
+          createdAt: Date.now(),
+          id: generateId(),
         };
 
         this.addThreadToQueue(threadData);
@@ -653,6 +645,9 @@ class PopupManager {
       const threadData = {
         text: text,
         paragraphs: this.parseThreadParagraphs(text),
+        source: "written",
+        createdAt: Date.now(),
+        id: generateId(),
       };
 
       this.addThreadToQueue(threadData);
@@ -664,116 +659,26 @@ class PopupManager {
     this.updateCharCount(composer);
   }
 
-  // NEW: Function to detect if text is exported thread data
-  isExportedThreadData(text) {
-    // Check for export header pattern
-    const hasExportHeader = /Threads Export - \d{1,2}\/\d{1,2}\/\d{4}/.test(
-      text
-    );
-    const hasTotalThreads = /Total Threads: \d+/.test(text);
-    const hasThreadSeparators = /Thread \d+:\s*-{10,}/.test(text);
-
-    return hasExportHeader && hasTotalThreads && hasThreadSeparators;
-  }
-
-  // NEW: Function to parse exported thread data
-  parseExportedThreads(text) {
-    const threads = [];
-
-    try {
-      // Split by thread separators and extract content
-      const threadPattern =
-        /Thread \d+:\s*-{10,}\s*([\s\S]*?)(?=Thread \d+:\s*-{10,}|$)/g;
-      let match;
-
-      while ((match = threadPattern.exec(text)) !== null) {
-        const threadContent = match[1].trim();
-
-        if (threadContent) {
-          // Clean up any remaining formatting artifacts
-          const cleanContent = threadContent
-            .replace(/^=+\s*$/gm, "") // Remove === lines
-            .replace(/^-+\s*$/gm, "") // Remove --- lines
-            .trim();
-
-          if (cleanContent) {
-            threads.push(cleanContent);
-          }
-        }
-      }
-
-      // Fallback: if regex didn't work, try simple splitting
-      if (threads.length === 0) {
-        const lines = text.split("\n");
-        let currentThread = "";
-        let inThreadContent = false;
-
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-
-          // Skip header and metadata lines
-          if (
-            trimmedLine.startsWith("Threads Export") ||
-            trimmedLine.startsWith("Total Threads:") ||
-            trimmedLine.match(/^=+$/) ||
-            trimmedLine === ""
-          ) {
-            continue;
-          }
-
-          // Start of new thread
-          if (trimmedLine.match(/^Thread \d+:$/)) {
-            // Save previous thread if exists
-            if (currentThread.trim()) {
-              threads.push(currentThread.trim());
-            }
-            currentThread = "";
-            inThreadContent = false;
-            continue;
-          }
-
-          // Thread separator line
-          if (trimmedLine.match(/^-{10,}$/)) {
-            inThreadContent = true;
-            continue;
-          }
-
-          // Thread content
-          if (inThreadContent) {
-            currentThread += (currentThread ? "\n" : "") + line;
-          }
-        }
-
-        // Don't forget the last thread
-        if (currentThread.trim()) {
-          threads.push(currentThread.trim());
-        }
-      }
-
-      Logger.log(`Parsed ${threads.length} threads from exported data`);
-      return threads;
-    } catch (error) {
-      Logger.error("Error parsing exported threads:", error);
-      return [];
-    }
-  }
-
-  // NEW: Helper function to parse paragraphs while preserving structure
+  // NEW: Helper function to parse paragraphs while preserving structure to match extracted format
   parseThreadParagraphs(text) {
-    // We want to preserve the exact formatting the user entered
-    // Only split into separate paragraphs on double (or more) line breaks
+    // Split by double (or more) line breaks to identify paragraphs
     const paragraphs = text
       .split(/\n\n+/)
       .map((paragraph) => {
-        // Each paragraph may contain single line breaks that should be preserved
+        const trimmedParagraph = paragraph.trim();
+        if (!trimmedParagraph) return null;
+
+        // Match the exact format from extracted threads
         return {
-          text: paragraph.trim(),
-          hasSpecialContent: /[^\x00-\x7F]/.test(paragraph),
-          // Store whether this paragraph has internal line breaks
-          hasLineBreaks: paragraph.includes("\n"),
+          text: trimmedParagraph,
+          hasSpecialContent: /[^\x00-\x7F]/.test(trimmedParagraph), // Check for emojis/special chars
+          hasLineBreaks: trimmedParagraph.includes("\n"), // Single line breaks within paragraph
+          // Add extraction-like metadata for consistency
+          originalHTML: null, // Written threads don't have original HTML
+          isUIElement: false, // Written threads are never UI elements
         };
       })
-      .filter((p) => p.text); // Remove empty paragraphs
+      .filter((p) => p !== null); // Remove empty paragraphs
 
     return paragraphs;
   }
@@ -815,7 +720,8 @@ class PopupManager {
 
       const preview = document.createElement("div");
       preview.className = "thread-preview";
-      const text = typeof thread === "string" ? thread : thread.text;
+      // All threads now have consistent format with .text property
+      const text = thread.text || thread;
       preview.textContent =
         text.length > CONFIG.UI.MAX_THREAD_PREVIEW_LENGTH
           ? text.substring(0, CONFIG.UI.MAX_THREAD_PREVIEW_LENGTH) + "..."
@@ -858,6 +764,7 @@ class PopupManager {
     if (selectedThreads.length === 0) return;
 
     this.isPosting = true;
+    await Storage.set("isCurrentlyPosting", true);
 
     // Update UI
     document.getElementById("startPosting").style.display = "none";
@@ -1009,6 +916,8 @@ class PopupManager {
   resetPostingState() {
     this.isPosting = false;
 
+    Storage.set("isCurrentlyPosting", false);
+
     // Reset UI
     document.getElementById("startPosting").style.display = "block";
     document.getElementById("stopPosting").style.display = "none";
@@ -1082,15 +991,17 @@ class PopupManager {
       return;
     }
 
-    // Prepare the text content
-    let textContent = `Threads Export - ${new Date().toLocaleString()}\n`;
-    textContent += `Total Threads: ${this.threadQueue.length}\n`;
-    textContent += "=".repeat(50) + "\n\n";
+    // Simple format - just threads separated by ---
+    let textContent = "";
 
     this.threadQueue.forEach((thread, index) => {
-      textContent += `Thread ${index + 1}:\n`;
-      textContent += "-".repeat(30) + "\n";
-      textContent += thread.text + "\n\n";
+      // Add the thread text (preserving all formatting from extraction)
+      textContent += thread.text;
+
+      // Add separator between threads (except after the last one)
+      if (index < this.threadQueue.length - 1) {
+        textContent += "\n\n---\n\n";
+      }
     });
 
     // Create blob and download

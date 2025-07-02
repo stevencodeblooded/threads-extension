@@ -76,6 +76,11 @@ let appState = {
   isStopping: false, // New flag to track if stopping was requested
 };
 
+// Generate unique ID for threads
+function generateId() {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
 // Enhanced logging function
 function log(message, level = "info") {
   const levels = {
@@ -415,10 +420,19 @@ function extractThreadContent(threadElement) {
     const threadText = paragraphs.map((p) => p.text).join("\n\n");
 
     if (threadText && threadText.length > 5) {
-      log(`Extracted thread with ${paragraphs.length} paragraphs: ${threadText.substring(0, 100)}...`, "info");
+      log(
+        `Extracted thread with ${
+          paragraphs.length
+        } paragraphs: ${threadText.substring(0, 100)}...`,
+        "info"
+      );
       return {
         text: threadText,
         paragraphs: paragraphs,
+        // Add consistent metadata
+        source: "extracted",
+        createdAt: Date.now(),
+        id: generateId(),
       };
     }
 
@@ -1086,15 +1100,16 @@ async function simulateRandomClicks() {
 
 // Updated posting function that preserves human-like typing AND line breaks
 async function postThread(threadObj) {
+  document.hidden = false; // Force visibility for DOM operations
   // We now expect threadObj to be an object with text and paragraphs properties
   // If it's just a string, convert it to the expected format
   const threadData =
     typeof threadObj === "string"
       ? {
           text: threadObj,
-          paragraphs: threadObj.split("\n\n").map((p) => ({ 
+          paragraphs: threadObj.split("\n\n").map((p) => ({
             text: p.trim(),
-            hasLineBreaks: p.includes('\n')
+            hasLineBreaks: p.includes("\n"),
           })),
         }
       : threadObj;
@@ -1191,7 +1206,7 @@ async function postThread(threadObj) {
     // RESTORED: Human-like typing with proper line break handling
     try {
       textArea.focus();
-      
+
       // Clear the editor completely
       textArea.innerHTML = "";
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1200,21 +1215,21 @@ async function postThread(threadObj) {
       for (let i = 0; i < paragraphs.length; i++) {
         const paragraph = paragraphs[i];
         const paragraphText = paragraph.text || paragraph;
-        
+
         // Split the paragraph by line breaks to handle them properly
-        const lines = paragraphText.split('\n');
-        
+        const lines = paragraphText.split("\n");
+
         // Type each line within the paragraph
         for (let j = 0; j < lines.length; j++) {
           const line = lines[j];
-          
+
           // Use the enhanced human typing for each line
           await enhancedHumanTyping(textArea, line);
-          
+
           // If not the last line in the paragraph, press Enter once
           if (j < lines.length - 1) {
             await new Promise((resolve) => setTimeout(resolve, 200));
-            
+
             // Simulate pressing Enter key
             const enterEvent = new KeyboardEvent("keydown", {
               key: "Enter",
@@ -1225,19 +1240,19 @@ async function postThread(threadObj) {
               cancelable: true,
             });
             textArea.dispatchEvent(enterEvent);
-            
+
             // Use insertLineBreak for single line break
             document.execCommand("insertLineBreak");
-            
+
             await new Promise((resolve) => setTimeout(resolve, 300));
           }
         }
-        
+
         // If not the last paragraph, add double line break
         if (i < paragraphs.length - 1) {
           // Wait a bit before paragraph break
           await new Promise((resolve) => setTimeout(resolve, 500));
-          
+
           // Press Enter twice for paragraph break
           for (let k = 0; k < 2; k++) {
             const enterEvent = new KeyboardEvent("keydown", {
@@ -1249,33 +1264,31 @@ async function postThread(threadObj) {
               cancelable: true,
             });
             textArea.dispatchEvent(enterEvent);
-            
+
             document.execCommand("insertLineBreak");
             await new Promise((resolve) => setTimeout(resolve, 200));
           }
-          
+
           // Pause between paragraphs (human thinking time)
           await new Promise((resolve) => setTimeout(resolve, 800));
         }
       }
 
       log("Completed human-like typing with proper formatting", "info");
-      
     } catch (e) {
       log(`Error in human typing: ${e.message}`, "warn");
-      
+
       // Fallback: If human typing fails, use direct text insertion
       try {
         textArea.innerHTML = "";
         textArea.focus();
-        
+
         // Just insert the original text as-is
         document.execCommand("insertText", false, threadData.text);
-        
       } catch (e2) {
         log(`Fallback also failed: ${e2.message}`, "error");
         // Last resort - set innerHTML
-        textArea.innerHTML = threadData.text.replace(/\n/g, '<br>');
+        textArea.innerHTML = threadData.text.replace(/\n/g, "<br>");
       }
     }
 

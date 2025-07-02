@@ -315,15 +315,12 @@ class BackgroundService {
     }
 
     if (this.postingState.currentIndex >= this.postingState.threads.length) {
-      // All threads processed
       this.onPostingComplete();
       return;
     }
 
     const currentThread =
       this.postingState.threads[this.postingState.currentIndex];
-
-    // Calculate delay - ALWAYS add delay, even for first thread
     const delay = this.getRandomDelay(
       this.postingState.minDelay,
       this.postingState.maxDelay
@@ -331,33 +328,66 @@ class BackgroundService {
 
     this.postingState.nextPostTime = Date.now() + delay;
 
-    Logger.log(
-      `Waiting ${delay / 1000} seconds before posting thread ${
-        this.postingState.currentIndex + 1
-      }`
-    );
-
     // Start countdown updates
     this.startCountdownUpdates();
 
-    // Create an alarm instead of setTimeout to handle background execution
-    const alarmName = `post-thread-${Date.now()}`;
+    // Use setTimeout instead of alarms - this persists in background
+    this.postingTimer = setTimeout(async () => {
+      await this.executePost(currentThread);
+    }, delay);
 
-    // Store the current posting state with alarm name
-    this.postingState.currentAlarm = alarmName;
     await this.saveState();
+  }
 
-    // Create alarm that will fire after delay
-    chrome.alarms.create(alarmName, {
-      when: Date.now() + delay,
-    });
+  async executePost(currentThread) {
+    if (!this.postingState.isActive || this.postingState.stopped) {
+      return;
+    }
 
-    // Store alarm handler data
-    await Storage.set(`alarm-${alarmName}`, {
-      action: "postThread",
-      thread: currentThread,
-      index: this.postingState.currentIndex,
-    });
+    this.stopCountdownUpdates();
+    this.postingState.message = "Posting thread...";
+    this.sendProgressUpdate();
+
+    let retries = 3;
+    let posted = false;
+
+    while (retries > 0 && !posted && !this.postingState.stopped) {
+      try {
+        // Ensure content script is ready
+        const scriptReady = await this.ensureContentScriptInjected(
+          this.postingState.tabId
+        );
+        if (!scriptReady) {
+          throw new Error("Content script not available");
+        }
+
+        // Post the thread - this works even when tab is minimized
+        const response = await this.sendToContentScript(
+          this.postingState.tabId,
+          "postSingleThread",
+          { thread: currentThread }
+        );
+
+        if (response && response.success) {
+          this.postingState.posted++;
+          this.postingState.postedThreadIds.push(currentThread.id);
+          posted = true;
+        } else {
+          throw new Error(response?.error || "Unknown error");
+        }
+      } catch (error) {
+        retries--;
+        if (retries > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        } else {
+          this.postingState.failed++;
+        }
+      }
+    }
+
+    this.postingState.currentIndex++;
+    await this.saveState();
+    this.processNextThread();
   }
 
   // Add these new functions after processNextThread
@@ -412,37 +442,23 @@ class BackgroundService {
   }
 
   async stopPosting(sendResponse) {
-    Logger.log("Stopping posting process");
-
     if (!this.postingState.isActive) {
       sendResponse({ success: false, error: "No posting in progress" });
       return;
     }
 
-    // Set stopped flag
     this.postingState.stopped = true;
 
-    // Clear any pending timer
+    // Clear timer instead of alarms
     if (this.postingTimer) {
       clearTimeout(this.postingTimer);
       this.postingTimer = null;
     }
 
-    // Clear any pending alarms
-    if (this.postingState.currentAlarm) {
-      await chrome.alarms.clear(this.postingState.currentAlarm);
-      await Storage.remove(`alarm-${this.postingState.currentAlarm}`);
-    }
-
-    // Stop countdown updates
     this.stopCountdownUpdates();
-
-    // Send stop signal to content script
     this.sendToContentScript(this.postingState.tabId, "stopReposting", {});
 
     sendResponse({ success: true });
-
-    // Trigger completion
     this.onPostingComplete();
   }
 
